@@ -1,0 +1,16 @@
+{
+  "name": "opencode-slim-mcp",
+  "version": "1.0.0",
+  "description": "Convert MCP servers into opencode skills + CLI wrappers",
+  "type": "module",
+  "scripts": {
+    "generate": "node generate.js",
+    "refresh": "node generate.js"
+  },
+  "bin": {
+    "slim-mcp-generate": "./generate.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}
