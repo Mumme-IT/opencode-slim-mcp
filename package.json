@@ -1,21 +1,40 @@
 {
   "name": "opencode-slim-mcp",
-  "version": "1.0.0",
-  "description": "Convert MCP servers into opencode skills + CLI wrappers",
+  "version": "1.1.0",
+  "description": "OpenCode plugin — convert MCP servers into skills + CLI wrappers with PATH injection",
+  "keywords": ["opencode", "plugin", "mcp", "skills"],
+  "license": "MIT",
+  "author": "Mumme-IT",
   "type": "module",
-  "main": "./generate.js",
-  "scripts": {
-    "generate": "node generate.js",
-    "refresh": "node generate.js"
+  "main": ".opencode/plugins/slim-mcp.js",
+  "exports": {
+    ".": {
+      "import": "./.opencode/plugins/slim-mcp.js"
+    }
   },
   "bin": {
     "slim-mcp-generate": "./generate.js"
   },
   "files": [
+    ".opencode",
     "generate.js",
     "README.md",
     "LICENSE"
   ],
+  "scripts": {
+    "build": "bun build index.ts --outdir .opencode/plugins --target node --entry-naming \"slim-mcp.[ext]\" --external @opencode-ai/plugin --external @opencode-ai/sdk --external @modelcontextprotocol/sdk",
+    "prepublishOnly": "bun run build",
+    "generate": "node generate.js",
+    "refresh": "node generate.js"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.4.6",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.8.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   }
