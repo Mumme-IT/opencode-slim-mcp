@@ -30,13 +30,65 @@ interface SlimMcpConfig {
   timeout?: number;
 }
 
+interface SlimPluginConfig {
+  lazyLoading: boolean;
+  idleShutdownMs: number;
+}
+
 interface ToolInfo {
   name: string;
   description?: string;
   inputSchema?: Record<string, any>;
 }
 
-// ─── Config Discovery ────────────────────────────────────────────────────────
+type ServerState = "pending" | "connected" | "disabled" | "error";
+
+const DEFAULT_IDLE_MS = 60_000;
+
+// ─── Plugin Config Discovery ─────────────────────────────────────────────────
+
+function parseIntervalMs(value: string): number {
+  const match = value.match(/^(\d+)\s*(ms|s|m|h)?$/i);
+  if (!match) return DEFAULT_IDLE_MS;
+
+  const num = parseInt(match[1], 10);
+  switch ((match[2] || "ms").toLowerCase()) {
+    case "h":
+      return num * 3_600_000;
+    case "m":
+      return num * 60_000;
+    case "s":
+      return num * 1_000;
+    default:
+      return num;
+  }
+}
+
+function loadPluginConfig(projectDir: string): SlimPluginConfig {
+  const candidates = [
+    join(projectDir, "slim-mcp-config.json"),
+    join(DEFAULT_BASE_DIR, "slim-mcp-config.json"),
+  ];
+
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(candidate, "utf8"));
+      return {
+        lazyLoading: raw["lazy-loading"] !== false,
+        idleShutdownMs: raw["lazy-idle-shutdown-interval"]
+          ? parseIntervalMs(String(raw["lazy-idle-shutdown-interval"]))
+          : DEFAULT_IDLE_MS,
+      };
+    } catch {
+      continue;
+    }
+  }
+
+  return { lazyLoading: true, idleShutdownMs: DEFAULT_IDLE_MS };
+}
+
+// ─── MCP Config Discovery ────────────────────────────────────────────────────
 
 function findOpenCodeConfigs(projectDir: string): string[] {
   return [
@@ -93,17 +145,23 @@ function extractSlimMcpEntries(
 
 // ─── MCP Connection Pool ─────────────────────────────────────────────────────
 
-const IDLE_TIMEOUT_MS = 60_000;
-
 interface PooledConnection {
   client: Client;
   lastUsed: number;
-  timer: ReturnType<typeof setTimeout>;
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 class McpConnectionPool {
   private connections = new Map<string, PooledConnection>();
   private configs = new Map<string, SlimMcpConfig>();
+  private errors = new Map<string, string>();
+  private idleShutdownMs: number;
+  private lazy: boolean;
+
+  constructor(pluginConfig: SlimPluginConfig) {
+    this.idleShutdownMs = pluginConfig.idleShutdownMs;
+    this.lazy = pluginConfig.lazyLoading;
+  }
 
   register(name: string, config: SlimMcpConfig): void {
     this.configs.set(name, config);
@@ -111,6 +169,32 @@ class McpConnectionPool {
 
   availableServers(): string[] {
     return [...this.configs.keys()];
+  }
+
+  serverState(name: string): ServerState {
+    if (this.errors.has(name)) return "error";
+    if (this.connections.has(name)) return "connected";
+    if (!this.configs.has(name)) return "disabled";
+    return "pending";
+  }
+
+  serverError(name: string): string | undefined {
+    return this.errors.get(name);
+  }
+
+  async connectAll(): Promise<void> {
+    const names = this.availableServers();
+    const results = await Promise.allSettled(
+      names.map((n) => this.getClient(n))
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === "rejected") {
+        const reason = (results[i] as PromiseRejectedResult).reason;
+        this.errors.set(names[i], String(reason?.message ?? reason));
+        console.error(`[slim-mcp] Failed to connect ${names[i]}:`, reason);
+      }
+    }
   }
 
   async getClient(name: string): Promise<Client> {
@@ -128,39 +212,52 @@ class McpConnectionPool {
     const config = this.configs.get(name);
     if (!config) throw new Error(`Unknown MCP server: ${name}`);
 
+    this.errors.delete(name);
+
     const env = config.environment
       ? { ...process.env, ...config.environment }
       : undefined;
 
     const [command, ...args] = config.command;
-    const transport = new StdioClientTransport({ command, args, env, stderr: "pipe" });
+    const transport = new StdioClientTransport({
+      command,
+      args,
+      env,
+      stderr: "pipe",
+    });
     const client = new Client({
       name: `slim-mcp-${name}`,
       version: "1.0.0",
     });
 
-    await client.connect(transport);
+    try {
+      await client.connect(transport);
+    } catch (err: any) {
+      this.errors.set(name, String(err?.message ?? err));
+      throw err;
+    }
 
-    const pooled: PooledConnection = {
-      client,
-      lastUsed: Date.now(),
-      timer: setTimeout(() => this.disconnect(name), IDLE_TIMEOUT_MS),
-    };
+    const timer =
+      this.lazy && this.idleShutdownMs > 0
+        ? setTimeout(() => this.disconnect(name), this.idleShutdownMs)
+        : null;
 
-    this.connections.set(name, pooled);
+    this.connections.set(name, { client, lastUsed: Date.now(), timer });
     return client;
   }
 
   private resetIdleTimer(name: string, conn: PooledConnection): void {
-    clearTimeout(conn.timer);
-    conn.timer = setTimeout(() => this.disconnect(name), IDLE_TIMEOUT_MS);
+    if (!this.lazy || this.idleShutdownMs <= 0) return;
+
+    if (conn.timer) clearTimeout(conn.timer);
+    conn.timer = setTimeout(() => this.disconnect(name), this.idleShutdownMs);
   }
 
   private async disconnect(name: string): Promise<void> {
     const conn = this.connections.get(name);
     if (!conn) return;
 
-    clearTimeout(conn.timer);
+    if (conn.timer) clearTimeout(conn.timer);
     this.connections.delete(name);
 
     try {
@@ -179,7 +276,13 @@ async function introspectServer(config: SlimMcpConfig): Promise<ToolInfo[]> {
     ? { ...process.env, ...config.environment }
     : undefined;
 
-  const transport = new StdioClientTransport({ command, args, env, stderr: "pipe" });  const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command,
+    args,
+    env,
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
 
   try {
     await client.connect(transport);
@@ -208,7 +311,7 @@ function formatToolResult(result: any): string {
   return JSON.stringify(content, null, 2);
 }
 
-// ─── Single MCP Tool ─────────────────────────────────────────────────────────
+// ─── Tools ───────────────────────────────────────────────────────────────────
 
 function createMcpTool(pool: McpConnectionPool) {
   return tool({
@@ -227,7 +330,9 @@ function createMcpTool(pool: McpConnectionPool) {
       params: tool.schema
         .string()
         .optional()
-        .describe("Tool parameters as JSON string, e.g. '{\"query\": \"test\"}'"),
+        .describe(
+          'Tool parameters as JSON string, e.g. \'{"query": "test"}\''
+        ),
     },
     async execute(args, ctx) {
       ctx.metadata({ title: `mcp: ${args.server}/${args.tool}` });
@@ -241,6 +346,37 @@ function createMcpTool(pool: McpConnectionPool) {
       });
 
       return formatToolResult(result);
+    },
+  });
+}
+
+function createMcpStatusTool(pool: McpConnectionPool) {
+  return tool({
+    description:
+      "Show status of all slim MCP servers: connected, pending, disabled, or error.",
+    args: {},
+    async execute(_args, ctx) {
+      ctx.metadata({ title: "mcp-status" });
+
+      const servers = pool.availableServers();
+      if (servers.length === 0) return "No slim MCP servers configured.";
+
+      const lines = servers.map((name) => {
+        const state = pool.serverState(name);
+        const error = pool.serverError(name);
+        const icon =
+          state === "connected"
+            ? "[connected]"
+            : state === "error"
+              ? "[error]"
+              : state === "disabled"
+                ? "[disabled]"
+                : "[pending]";
+        const suffix = error ? ` — ${error}` : "";
+        return `${icon} ${name}${suffix}`;
+      });
+
+      return lines.join("\n");
     },
   });
 }
@@ -416,8 +552,9 @@ async function generateAll(
 
 const SlimMcpPlugin: Plugin = async (input) => {
   const projectDir = input.directory;
+  const pluginConfig = loadPluginConfig(projectDir);
   const slimEntries = extractSlimMcpEntries(projectDir);
-  const pool = new McpConnectionPool();
+  const pool = new McpConnectionPool(pluginConfig);
 
   if (Object.keys(slimEntries).length === 0) {
     return {
@@ -436,14 +573,18 @@ const SlimMcpPlugin: Plugin = async (input) => {
     pool.register(name, config);
   }
 
-  // Regenerate skills if needed (async, non-blocking for tool registration)
+  // Regenerate skills if needed
   if (needsRegeneration(slimEntries)) {
     await generateAll(slimEntries, pool);
   }
 
+  // Eager connect if lazy-loading is disabled
+  if (!pluginConfig.lazyLoading) {
+    await pool.connectAll();
+  }
+
   return {
     config: async (cfg: any) => {
-      // Disable slim MCPs so opencode doesn't load their tool schemas
       if (cfg.mcp) {
         for (const [, entry] of Object.entries(cfg.mcp) as [string, any][]) {
           if (entry.slim === true) {
@@ -465,6 +606,7 @@ const SlimMcpPlugin: Plugin = async (input) => {
 
     tool: {
       mcp: createMcpTool(pool),
+      "mcp-status": createMcpStatusTool(pool),
     },
   };
 };
