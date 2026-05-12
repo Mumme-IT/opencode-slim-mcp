@@ -310,16 +310,17 @@ function formatParamDocs(toolInfo: ToolInfo): string {
 }
 
 function generateSkillMd(serverName: string, tools: ToolInfo[]): string {
-  const toolTable = tools
-    .map((t) => `| \`${t.name}\` | ${t.description || ""} |`)
-    .join("\n");
-  const paramSections = tools
-    .map((t) => `#### \`${t.name}\`\n${formatParamDocs(t)}`)
-    .join("\n\n");
   const triggers = tools
     .slice(0, 3)
     .map((t) => t.name.replace(/_/g, " "))
     .join(", ");
+
+  const toolTableWithIds = tools
+    .map((t) => `| \`${serverName}_${t.name}\` | ${t.description || ""} |`)
+    .join("\n");
+  const paramSectionsWithIds = tools
+    .map((t) => `#### \`${serverName}_${t.name}\`\n${formatParamDocs(t)}`)
+    .join("\n\n");
 
   return `---
 name: mcp-${serverName}
@@ -330,18 +331,17 @@ description: >
 
 # ${serverName} MCP Tools
 
-Tools are registered as native opencode tools with prefix \`${serverName}_\`.
-Call them directly — no CLI wrapper needed.
+These are native opencode tools. Call them directly by tool name — do NOT use Bash or CLI wrappers.
 
 ## Tools
 
-| Tool | Description |
+| Tool (use this exact name) | Description |
 |---|---|
-${toolTable}
+${toolTableWithIds}
 
 ## Parameters
 
-${paramSections}
+${paramSectionsWithIds}
 `;
 }
 
@@ -371,7 +371,10 @@ function writeSchemas(serverName: string, tools: ToolInfo[]): void {
 
 // ─── Manifest ────────────────────────────────────────────────────────────────
 
+const MANIFEST_VERSION = 2;
+
 interface Manifest {
+  version?: number;
   generatedAt: string;
   servers: Record<string, { toolCount: number }>;
 }
@@ -400,6 +403,7 @@ function needsRegeneration(
 ): boolean {
   const manifest = loadManifest();
   if (!manifest) return true;
+  if ((manifest.version ?? 0) < MANIFEST_VERSION) return true;
 
   const manifestKeys = Object.keys(manifest.servers).sort().join(",");
   const currentKeys = Object.keys(servers).sort().join(",");
@@ -418,6 +422,7 @@ async function generateAll(
   pool: McpConnectionPool
 ): Promise<GenerationResult> {
   const manifest: Manifest = {
+    version: MANIFEST_VERSION,
     generatedAt: new Date().toISOString(),
     servers: {},
   };
