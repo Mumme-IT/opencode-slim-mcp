@@ -13,6 +13,8 @@ import { homedir } from "os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
+import type { OAuthTokens, OAuthClientInformationMixed, OAuthClientMetadata } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
@@ -20,6 +22,83 @@ const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
 const DEFAULT_BASE_DIR = join(homedir(), ".config", "opencode");
 const DEFAULT_SKILLS_DIR = join(DEFAULT_BASE_DIR, "skills");
 const AI_SKILLS_DIR = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
+const MCP_AUTH_FILE = join(homedir(), ".local", "share", "opencode", "mcp-auth.json");
+
+// ─── Stored MCP Auth Provider ────────────────────────────────────────────────
+
+interface StoredMcpAuth {
+  clientInfo?: OAuthClientInformationMixed;
+  serverUrl?: string;
+  tokens?: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: number;
+    scope?: string;
+  };
+}
+
+function loadMcpAuth(serverName: string): StoredMcpAuth | undefined {
+  if (!existsSync(MCP_AUTH_FILE)) return undefined;
+  try {
+    const data = JSON.parse(readFileSync(MCP_AUTH_FILE, "utf8"));
+    return data[serverName] ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+class StoredOAuthClientProvider implements OAuthClientProvider {
+  private stored: StoredMcpAuth;
+  private serverName: string;
+
+  constructor(serverName: string, stored: StoredMcpAuth) {
+    this.serverName = serverName;
+    this.stored = stored;
+  }
+
+  get redirectUrl(): string | undefined {
+    return undefined;
+  }
+
+  get clientMetadata(): OAuthClientMetadata {
+    return {
+      redirect_uris: [],
+      client_name: `slim-mcp-${this.serverName}`,
+    } as OAuthClientMetadata;
+  }
+
+  clientInformation(): OAuthClientInformationMixed | undefined {
+    return this.stored.clientInfo;
+  }
+
+  async tokens(): Promise<OAuthTokens | undefined> {
+    // Re-read from disk each time — opencode core may have refreshed tokens
+    const fresh = loadMcpAuth(this.serverName);
+    if (!fresh?.tokens) return undefined;
+    return {
+      access_token: fresh.tokens.accessToken,
+      refresh_token: fresh.tokens.refreshToken,
+      token_type: "Bearer",
+      expires_in: fresh.tokens.expiresAt
+        ? Math.max(0, Math.floor(fresh.tokens.expiresAt - Date.now() / 1000))
+        : undefined,
+      scope: fresh.tokens.scope,
+    } as OAuthTokens;
+  }
+
+  async saveTokens(_tokens: OAuthTokens): Promise<void> {
+    // Read-only — opencode core manages token persistence
+  }
+
+  async redirectToAuthorization(_url: URL): Promise<void> {
+    throw new Error(
+      `Server '${this.serverName}' requires authentication. Run: opencode mcp auth ${this.serverName}`
+    );
+  }
+
+  async saveCodeVerifier(_verifier: string): Promise<void> {}
+  async codeVerifier(): Promise<string> { return ""; }
+}
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -45,7 +124,24 @@ interface ToolInfo {
   inputSchema?: Record<string, any>;
 }
 
-type ServerState = "pending" | "connected" | "disabled" | "error";
+type ServerState = "pending" | "connected" | "disabled" | "error" | "needs_auth";
+
+// ─── Auth Error Detection ────────────────────────────────────────────────────
+
+const AUTH_ERROR_PATTERNS = [
+  /no access token/i,
+  /access token.*provided/i,
+  /unauthorized/i,
+  /401/,
+  /authentication required/i,
+  /not authenticated/i,
+  /not logged in/i,
+  /login required/i,
+];
+
+function isAuthError(error: string): boolean {
+  return AUTH_ERROR_PATTERNS.some((p) => p.test(error));
+}
 
 const DEFAULT_IDLE_MS = 60_000;
 
@@ -180,6 +276,7 @@ class McpConnectionPool {
   private connections = new Map<string, PooledConnection>();
   private configs = new Map<string, SlimMcpConfig>();
   private errors = new Map<string, string>();
+  private authErrors = new Set<string>();
   private idleShutdownMs: number;
   private lazy: boolean;
 
@@ -200,6 +297,7 @@ class McpConnectionPool {
     const config = this.configs.get(name);
     if (!config) return "disabled";
     if (config.enabled === false) return "disabled";
+    if (this.authErrors.has(name)) return "needs_auth";
     if (this.errors.has(name)) return "error";
     if (this.connections.has(name)) return "connected";
     return "pending";
@@ -213,6 +311,15 @@ class McpConnectionPool {
 
   serverError(name: string): string | undefined {
     return this.errors.get(name);
+  }
+
+  serversNeedingAuth(): string[] {
+    return [...this.authErrors];
+  }
+
+  markNeedsAuth(name: string, error: string): void {
+    this.authErrors.add(name);
+    this.errors.set(name, error);
   }
 
   async connectAll(): Promise<void> {
@@ -256,7 +363,12 @@ class McpConnectionPool {
 
     if (config.type === "remote") {
       const url = new URL(config.url!);
+      const storedAuth = loadMcpAuth(name);
+      const authProvider = storedAuth
+        ? new StoredOAuthClientProvider(name, storedAuth)
+        : undefined;
       transport = new StreamableHTTPClientTransport(url, {
+        authProvider,
         requestInit: config.headers
           ? { headers: config.headers }
           : undefined,
@@ -283,7 +395,11 @@ class McpConnectionPool {
     try {
       await client.connect(transport);
     } catch (err: any) {
-      this.errors.set(name, String(err?.message ?? err));
+      const msg = String(err?.message ?? err);
+      if (isAuthError(msg)) {
+        this.authErrors.add(name);
+      }
+      this.errors.set(name, msg);
       throw err;
     }
 
@@ -320,12 +436,17 @@ class McpConnectionPool {
 
 // ─── Introspection ───────────────────────────────────────────────────────────
 
-async function introspectServer(config: SlimMcpConfig): Promise<ToolInfo[]> {
+async function introspectServer(name: string, config: SlimMcpConfig): Promise<ToolInfo[]> {
   let transport;
 
   if (config.type === "remote") {
     const url = new URL(config.url!);
+    const storedAuth = loadMcpAuth(name);
+    const authProvider = storedAuth
+      ? new StoredOAuthClientProvider(name, storedAuth)
+      : undefined;
     transport = new StreamableHTTPClientTransport(url, {
+      authProvider,
       requestInit: config.headers
         ? { headers: config.headers }
         : undefined,
@@ -398,13 +519,41 @@ function createMcpTool(pool: McpConnectionPool) {
     async execute(args, ctx) {
       ctx.metadata({ title: `mcp: ${args.server}/${args.tool}` });
 
-      const client = await pool.getClient(args.server);
+      let client: Client;
+      try {
+        client = await pool.getClient(args.server);
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        if (isAuthError(msg)) {
+          return (
+            `Server '${args.server}' requires authentication.\n` +
+            `Run: opencode mcp auth ${args.server}\n\n` +
+            `Original error: ${msg}`
+          );
+        }
+        throw err;
+      }
+
       const toolParams = args.params ? JSON.parse(args.params) : {};
 
-      const result = await client.callTool({
-        name: args.tool,
-        arguments: toolParams,
-      });
+      let result;
+      try {
+        result = await client.callTool({
+          name: args.tool,
+          arguments: toolParams,
+        });
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        if (isAuthError(msg)) {
+          pool.markNeedsAuth(args.server, msg);
+          return (
+            `Server '${args.server}' requires authentication.\n` +
+            `Run: opencode mcp auth ${args.server}\n\n` +
+            `Original error: ${msg}`
+          );
+        }
+        throw err;
+      }
 
       return formatToolResult(result);
     },
@@ -428,12 +577,18 @@ function createMcpStatusTool(pool: McpConnectionPool) {
         const icon =
           state === "connected"
             ? "[connected]"
-            : state === "error"
-              ? "[error]"
-              : state === "disabled"
-                ? "[disabled]"
-                : "[pending]";
-        const suffix = error ? ` — ${error}` : "";
+            : state === "needs_auth"
+              ? "[needs_auth]"
+              : state === "error"
+                ? "[error]"
+                : state === "disabled"
+                  ? "[disabled]"
+                  : "[pending]";
+        const suffix = state === "needs_auth"
+          ? ` — Run: opencode mcp auth ${name}`
+          : error
+            ? ` — ${error}`
+            : "";
         return `${icon} ${name}${suffix}`;
       });
 
@@ -592,7 +747,7 @@ async function generateAll(
   const results = await Promise.allSettled(
     entries.map(async ([serverName, config]) => {
       pool.register(serverName, config);
-      const tools = await introspectServer(config);
+      const tools = await introspectServer(serverName, config);
       if (tools.length === 0) return;
 
       writeSkill(serverName, generateSkillMd(serverName, tools));
@@ -674,6 +829,22 @@ const SlimMcpPlugin: Plugin = async (input) => {
     tool: {
       mcp: createMcpTool(pool),
       "mcp-status": createMcpStatusTool(pool),
+    },
+
+    "experimental.chat.system.transform": async (_input, output) => {
+      const needsAuth = pool.serversNeedingAuth();
+      if (needsAuth.length === 0) return;
+
+      const lines = needsAuth.map(
+        (name) => `- MCP server '${name}' requires authentication. Run: opencode mcp auth ${name}`
+      );
+      output.system.push(
+        `<system-reminder>\n` +
+        `The following MCP servers need authentication before use:\n` +
+        `${lines.join("\n")}\n` +
+        `Inform the user about this when relevant.\n` +
+        `</system-reminder>`
+      );
     },
   };
 };
