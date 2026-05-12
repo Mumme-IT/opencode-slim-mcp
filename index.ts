@@ -111,7 +111,14 @@ function normalizeCommand(entry: any): string[] | null {
 }
 
 function isSupportedMcp(entry: any): boolean {
-  return !entry.type || entry.type === "local" || entry.type === "remote";
+  if (entry.type === "local" || entry.type === "remote") return true;
+  if (!entry.type) return !!(entry.url || entry.command);
+  return false;
+}
+
+function inferType(entry: any): "local" | "remote" {
+  if (entry.type === "remote" || (!entry.type && entry.url)) return "remote";
+  return "local";
 }
 
 function extractSlimMcpEntries(
@@ -128,7 +135,7 @@ function extractSlimMcpEntries(
       for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
         if (entry.slim !== true || !isSupportedMcp(entry)) continue;
 
-        const isRemote = entry.type === "remote";
+        const isRemote = inferType(entry) === "remote";
 
         if (isRemote) {
           if (!entry.url) continue;
