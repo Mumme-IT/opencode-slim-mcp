@@ -76,19 +76,19 @@ Regeneration only triggers when the enabled server list changes.
 
 ## Plugin Configuration
 
-Create `.ai-skills/slim-mcp/config.json` in project root or `~/.config/opencode/`:
+Create `slim-mcp-config.json` in your project root or `~/.config/opencode/`:
 
 ```json
 {
-  "lazyLoading": true,
-  "idleShutdownMs": 300000
+  "lazy-loading": true,
+  "lazy-idle-shutdown-interval": "5m"
 }
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `lazyLoading` | `true` | Connect to servers on first tool call (vs. eagerly on startup) |
-| `idleShutdownMs` | `300000` | Disconnect idle servers after this duration (ms) |
+| `lazy-loading` | `true` | Connect to servers on first tool call (vs. eagerly on startup) |
+| `lazy-idle-shutdown-interval` | `"5m"` | Disconnect idle servers after this duration (e.g. `"5m"`, `"300000"`) |
 
 ## Tools Provided
 
@@ -110,8 +110,7 @@ Shows status of all slim MCP servers: `connected`, `pending`, `disabled`, or `er
 ~/.config/opencode/.ai-skills/slim-mcp/
 ├── skills/mcp-<server>/SKILL.md     # Tool names, descriptions, param docs
 ├── schemas/<server>/*.json           # Per-tool input schemas
-├── manifest.json                     # Generation metadata
-└── config.json                       # Plugin configuration
+└── manifest.json                     # Generation metadata
 ```
 
 ## Prerequisites
