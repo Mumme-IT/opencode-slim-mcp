@@ -607,10 +607,8 @@ const SlimMcpPlugin: Plugin = async (input) => {
         const slimNames = new Set(Object.keys(slimEntries).filter(
           (name) => slimEntries[name].enabled !== false
         ));
-        for (const [name, entry] of Object.entries(cfg.mcp) as [string, any][]) {
-          if (slimNames.has(name)) {
-            entry.enabled = false;
-          }
+        for (const name of slimNames) {
+          delete cfg.mcp[name];
         }
       }
 
