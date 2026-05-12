@@ -24,7 +24,6 @@ const AI_SKILLS_DIR = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface SlimMcpConfig {
-  type: "local";
   command: string[];
   environment?: Record<string, string>;
   slim?: boolean;
@@ -47,6 +46,19 @@ function findOpenCodeConfigs(projectDir: string): string[] {
   ].filter(existsSync);
 }
 
+function normalizeCommand(entry: any): string[] | null {
+  if (Array.isArray(entry.command)) return entry.command;
+  if (typeof entry.command === "string") {
+    const args = Array.isArray(entry.args) ? entry.args : [];
+    return [entry.command, ...args];
+  }
+  return null;
+}
+
+function isLocalMcp(entry: any): boolean {
+  return !entry.type || entry.type === "local";
+}
+
 function extractSlimMcpEntries(
   projectDir: string
 ): Record<string, SlimMcpConfig> {
@@ -59,9 +71,18 @@ function extractSlimMcpEntries(
       if (!mcp) continue;
 
       for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
-        if (entry.slim === true && entry.type === "local") {
-          slimEntries[name] = entry;
-        }
+        if (entry.slim !== true || !isLocalMcp(entry)) continue;
+
+        const command = normalizeCommand(entry);
+        if (!command) continue;
+
+        slimEntries[name] = {
+          command,
+          environment: entry.environment,
+          slim: true,
+          enabled: entry.enabled,
+          timeout: entry.timeout,
+        };
       }
     } catch {
       continue;
