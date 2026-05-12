@@ -172,10 +172,18 @@ class McpConnectionPool {
   }
 
   serverState(name: string): ServerState {
+    const config = this.configs.get(name);
+    if (!config) return "disabled";
+    if (config.enabled === false) return "disabled";
     if (this.errors.has(name)) return "error";
     if (this.connections.has(name)) return "connected";
-    if (!this.configs.has(name)) return "disabled";
     return "pending";
+  }
+
+  enabledServers(): string[] {
+    return [...this.configs.entries()]
+      .filter(([, cfg]) => cfg.enabled !== false)
+      .map(([name]) => name);
   }
 
   serverError(name: string): string | undefined {
@@ -183,7 +191,7 @@ class McpConnectionPool {
   }
 
   async connectAll(): Promise<void> {
-    const names = this.availableServers();
+    const names = this.enabledServers();
     const results = await Promise.allSettled(
       names.map((n) => this.getClient(n))
     );
@@ -198,6 +206,11 @@ class McpConnectionPool {
   }
 
   async getClient(name: string): Promise<Client> {
+    const config = this.configs.get(name);
+    if (!config) throw new Error(`Unknown MCP server: ${name}`);
+    if (config.enabled === false)
+      throw new Error(`MCP server '${name}' is disabled`);
+
     const existing = this.connections.get(name);
     if (existing) {
       existing.lastUsed = Date.now();
@@ -319,7 +332,7 @@ function createMcpTool(pool: McpConnectionPool) {
       "Call a tool on a slim MCP server. " +
       "Use the mcp-<server> skill to discover available tools and parameters. " +
       "Available servers: " +
-      pool.availableServers().join(", "),
+      pool.enabledServers().join(", "),
     args: {
       server: tool.schema
         .string()
@@ -505,8 +518,11 @@ function needsRegeneration(servers: Record<string, SlimMcpConfig>): boolean {
   if (!manifest) return true;
   if ((manifest.version ?? 0) < MANIFEST_VERSION) return true;
 
+  const enabledServers = Object.entries(servers)
+    .filter(([, cfg]) => cfg.enabled !== false)
+    .map(([name]) => name);
   const manifestKeys = Object.keys(manifest.servers).sort().join(",");
-  const currentKeys = Object.keys(servers).sort().join(",");
+  const currentKeys = enabledServers.sort().join(",");
   return manifestKeys !== currentKeys;
 }
 
@@ -522,7 +538,9 @@ async function generateAll(
     servers: {},
   };
 
-  const entries = Object.entries(servers);
+  const entries = Object.entries(servers).filter(
+    ([, cfg]) => cfg.enabled !== false
+  );
   const results = await Promise.allSettled(
     entries.map(async ([serverName, config]) => {
       pool.register(serverName, config);
