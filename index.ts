@@ -24,10 +24,8 @@ interface ServerConfig {
 
 function findMcpConfig(projectDir: string): Record<string, ServerConfig> | null {
   const candidates = [
-    join(projectDir, "mcp-lazy-proxy.json"),
-    join(projectDir, "mcp.json"),
-    join(DEFAULT_BASE_DIR, "mcp-lazy-proxy.json"),
-    join(DEFAULT_BASE_DIR, "mcp.json"),
+    join(projectDir, "slim-mcp.json"),
+    join(DEFAULT_BASE_DIR, "slim-mcp.json"),
   ];
 
   for (const candidate of candidates) {
