@@ -1,6 +1,6 @@
 # opencode-slim-mcp
 
-Converts MCP servers into opencode **skills** + **CLI wrappers**. Agent discovers tools via on-demand skill loading (zero idle token cost), calls them via shell.
+OpenCode plugin that converts MCP servers into **skills** + **CLI wrappers**. Agent discovers tools via on-demand skill loading (zero idle token cost), calls them via shell.
 
 ## Problem
 
@@ -8,31 +8,17 @@ Converts MCP servers into opencode **skills** + **CLI wrappers**. Agent discover
 - `mcp-lazy-proxy` strips schemas → agent flies blind
 - No middle ground existed
 
-## Quick Start
+## Install
 
-```bash
-npm install
-# Place your mcp-lazy-proxy.json in the project root (or pass path as arg)
-node generate.js
+Add to `opencode.json`:
+
+```json
+{
+  "plugin": ["opencode-slim-mcp"]
+}
 ```
 
-Outputs land in `~/.config/opencode/` by default.
-
-## CLI Flags
-
-```
-node generate.js [config.json] [options]
-
-Options:
-  --output-dir <path>      Base output directory (default: ~/.config/opencode)
-  --skills-dir <path>      Override skills output path
-  --bin-dir <path>         Override CLI wrappers output path
-  --ai-skills-dir <path>   Override schema cache path
-```
-
-## Config Format
-
-Reads `mcp-lazy-proxy.json` — supports both `{ mcpServers: {} }` and `{ servers: {} }` shapes. Each entry needs `command` and optional `args`:
+Place MCP server config as `mcp-lazy-proxy.json` or `mcp.json` in project root or `~/.config/opencode/`.
 
 ```json
 {
@@ -41,6 +27,18 @@ Reads `mcp-lazy-proxy.json` — supports both `{ mcpServers: {} }` and `{ server
   }
 }
 ```
+
+Both `{ mcpServers: {} }` and `{ servers: {} }` shapes supported.
+
+## What Happens on Startup
+
+1. Plugin discovers MCP config (project dir → `~/.config/opencode/`)
+2. Introspects each server for available tools
+3. Generates SKILL.md files + CLI wrappers + schema cache
+4. Registers skills path via `config` hook
+5. Injects `~/.config/opencode/bin` into agent `PATH` via `shell.env` hook
+
+Regeneration only triggers when server list changes.
 
 ## Generated CLI Usage
 
@@ -61,16 +59,24 @@ mcp-<server> --schema <tool>                 # show tool input schema
 ├── bin/mcp-<server>                 # Executable CLI wrapper (Node.js)
 └── .ai-skills/slim-mcp/
     ├── schemas/<server>/*.json      # Per-tool input schemas
-    ├── manifest.json                # Generation metadata + paths
-    └── config.json                  # Cached server definitions
+    └── manifest.json                # Generation metadata
 ```
 
-## Refresh
+## Manual Regeneration
 
-Re-run `node generate.js` (or `npm run refresh`) to re-introspect servers and regenerate all artifacts.
+Standalone CLI available for manual re-introspection:
+
+```bash
+npx slim-mcp-generate [config.json] [options]
+
+Options:
+  --output-dir <path>      Base output directory (default: ~/.config/opencode)
+  --skills-dir <path>      Override skills output path
+  --bin-dir <path>         Override CLI wrappers output path
+  --ai-skills-dir <path>   Override schema cache path
+```
 
 ## Prerequisites
 
 - Node.js (ESM)
-- `@modelcontextprotocol/sdk` (installed via `npm install`)
 - MCP servers must be reachable via their configured `command`/`args`
