@@ -1,48 +1,36 @@
-import type { Plugin } from "@opencode-ai/plugin";
+import type { Plugin, ToolDefinition } from "@opencode-ai/plugin";
+import { tool } from "@opencode-ai/plugin";
 import { fileURLToPath } from "url";
 import path from "path";
-import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from "fs";
+import {
+  existsSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+} from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { z } from "zod";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
 
 const DEFAULT_BASE_DIR = join(homedir(), ".config", "opencode");
-const DEFAULT_BIN_DIR = join(DEFAULT_BASE_DIR, "bin");
 const DEFAULT_SKILLS_DIR = join(DEFAULT_BASE_DIR, "skills");
 const AI_SKILLS_DIR = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
 
-// ─── MCP Config Discovery ────────────────────────────────────────────────────
+// ─── Types ───────────────────────────────────────────────────────────────────
 
-interface ServerConfig {
-  command: string;
-  args?: string[];
+interface SlimMcpConfig {
+  type: "local";
+  command: string[];
+  environment?: Record<string, string>;
+  slim?: boolean;
+  enabled?: boolean;
+  timeout?: number;
 }
-
-function findMcpConfig(projectDir: string): Record<string, ServerConfig> | null {
-  const candidates = [
-    join(projectDir, "slim-mcp.json"),
-    join(DEFAULT_BASE_DIR, "slim-mcp.json"),
-  ];
-
-  for (const candidate of candidates) {
-    if (!existsSync(candidate)) continue;
-    try {
-      const config = JSON.parse(readFileSync(candidate, "utf8"));
-      const servers = config.mcpServers ?? config.servers;
-      if (servers && Object.keys(servers).length > 0) return servers;
-    } catch {
-      continue;
-    }
-  }
-
-  return null;
-}
-
-// ─── Introspection ───────────────────────────────────────────────────────────
 
 interface ToolInfo {
   name: string;
@@ -50,10 +38,142 @@ interface ToolInfo {
   inputSchema?: Record<string, any>;
 }
 
-async function introspectServer(serverConfig: ServerConfig): Promise<ToolInfo[]> {
-  const { command, args = [] } = serverConfig;
-  const transport = new StdioClientTransport({ command, args });
-  const client = new Client({ name: "slim-mcp-plugin", version: "1.0.0" });
+// ─── Config Discovery ────────────────────────────────────────────────────────
+
+function findOpenCodeConfigs(projectDir: string): string[] {
+  return [
+    join(projectDir, "opencode.json"),
+    join(DEFAULT_BASE_DIR, "opencode.json"),
+  ].filter(existsSync);
+}
+
+function extractSlimMcpEntries(
+  projectDir: string
+): Record<string, SlimMcpConfig> {
+  const slimEntries: Record<string, SlimMcpConfig> = {};
+
+  for (const configPath of findOpenCodeConfigs(projectDir)) {
+    try {
+      const config = JSON.parse(readFileSync(configPath, "utf8"));
+      const mcp = config.mcp;
+      if (!mcp) continue;
+
+      for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
+        if (entry.slim === true && entry.type === "local") {
+          slimEntries[name] = entry;
+        }
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  return slimEntries;
+}
+
+// ─── MCP Connection Pool ─────────────────────────────────────────────────────
+
+const IDLE_TIMEOUT_MS = 60_000;
+
+interface PooledConnection {
+  client: Client;
+  transport: StdioClientTransport;
+  lastUsed: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+class McpConnectionPool {
+  private connections = new Map<string, PooledConnection>();
+  private configs = new Map<string, SlimMcpConfig>();
+
+  register(name: string, config: SlimMcpConfig): void {
+    this.configs.set(name, config);
+  }
+
+  async getClient(name: string): Promise<Client> {
+    const existing = this.connections.get(name);
+    if (existing) {
+      existing.lastUsed = Date.now();
+      this.resetIdleTimer(name, existing);
+      return existing.client;
+    }
+
+    return this.connect(name);
+  }
+
+  private async connect(name: string): Promise<Client> {
+    const config = this.configs.get(name);
+    if (!config) throw new Error(`Unknown MCP server: ${name}`);
+
+    const env = config.environment
+      ? { ...process.env, ...config.environment }
+      : undefined;
+
+    const [command, ...args] = config.command;
+    const transport = new StdioClientTransport({
+      command,
+      args,
+      env,
+    });
+    const client = new Client({
+      name: `slim-mcp-${name}`,
+      version: "1.0.0",
+    });
+
+    await client.connect(transport);
+
+    const pooled: PooledConnection = {
+      client,
+      transport,
+      lastUsed: Date.now(),
+      timer: setTimeout(() => this.disconnect(name), IDLE_TIMEOUT_MS),
+    };
+
+    this.connections.set(name, pooled);
+    return client;
+  }
+
+  private resetIdleTimer(
+    name: string,
+    connection: PooledConnection
+  ): void {
+    clearTimeout(connection.timer);
+    connection.timer = setTimeout(
+      () => this.disconnect(name),
+      IDLE_TIMEOUT_MS
+    );
+  }
+
+  private async disconnect(name: string): Promise<void> {
+    const connection = this.connections.get(name);
+    if (!connection) return;
+
+    clearTimeout(connection.timer);
+    this.connections.delete(name);
+
+    try {
+      await connection.client.close();
+    } catch {
+      // Server may already be gone
+    }
+  }
+
+  async disconnectAll(): Promise<void> {
+    const names = [...this.connections.keys()];
+    await Promise.allSettled(names.map((n) => this.disconnect(n)));
+  }
+}
+
+// ─── Introspection ───────────────────────────────────────────────────────────
+
+async function introspectServer(config: SlimMcpConfig): Promise<ToolInfo[]> {
+  const [command, ...args] = config.command;
+  const env = config.environment
+    ? { ...process.env, ...config.environment }
+    : undefined;
+
+  const transport = new StdioClientTransport({ command, args, env });
+  const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
 
   try {
     await client.connect(transport);
@@ -61,15 +181,119 @@ async function introspectServer(serverConfig: ServerConfig): Promise<ToolInfo[]>
     await client.close();
     return tools as ToolInfo[];
   } catch {
-    try { await client.close(); } catch {}
+    try {
+      await client.close();
+    } catch {}
     return [];
   }
 }
 
+// ─── Zod Schema Conversion ──────────────────────────────────────────────────
+
+function jsonSchemaPropertyToZod(prop: any, isRequired: boolean): z.ZodTypeAny {
+  let schema: z.ZodTypeAny;
+
+  switch (prop.type) {
+    case "string":
+      schema = prop.enum ? z.enum(prop.enum) : z.string();
+      break;
+    case "number":
+    case "integer":
+      schema = z.number();
+      break;
+    case "boolean":
+      schema = z.boolean();
+      break;
+    case "array":
+      schema = z.array(z.any());
+      break;
+    case "object":
+      schema = z.record(z.any());
+      break;
+    default:
+      schema = z.any();
+  }
+
+  if (prop.description) {
+    schema = schema.describe(prop.description);
+  }
+
+  return isRequired ? schema : schema.optional();
+}
+
+function jsonSchemaToZodShape(
+  inputSchema?: Record<string, any>
+): z.ZodRawShape {
+  if (!inputSchema?.properties) return {};
+
+  const required = new Set(inputSchema.required || []);
+  const shape: z.ZodRawShape = {};
+
+  for (const [name, prop] of Object.entries(inputSchema.properties) as [
+    string,
+    any,
+  ][]) {
+    shape[name] = jsonSchemaPropertyToZod(prop, required.has(name));
+  }
+
+  return shape;
+}
+
+// ─── Proxy Tool Registration ─────────────────────────────────────────────────
+
+function createProxyTool(
+  serverName: string,
+  toolInfo: ToolInfo,
+  pool: McpConnectionPool
+): ToolDefinition {
+  const description = toolInfo.description || `Call ${toolInfo.name} on ${serverName} MCP`;
+  const zodShape = jsonSchemaToZodShape(toolInfo.inputSchema);
+
+  return tool({
+    description,
+    args: zodShape,
+    async execute(args, ctx) {
+      ctx.metadata({ title: `${serverName}/${toolInfo.name}` });
+
+      const client = await pool.getClient(serverName);
+      const result = await client.callTool({
+        name: toolInfo.name,
+        arguments: args,
+      });
+
+      const content = result.content ?? result;
+      if (Array.isArray(content)) {
+        return content
+          .map((item: any) =>
+            item.type === "text" ? item.text : JSON.stringify(item, null, 2)
+          )
+          .join("\n");
+      }
+
+      return JSON.stringify(content, null, 2);
+    },
+  });
+}
+
+function buildProxyTools(
+  serverName: string,
+  tools: ToolInfo[],
+  pool: McpConnectionPool
+): Record<string, ToolDefinition> {
+  const result: Record<string, ToolDefinition> = {};
+
+  for (const toolInfo of tools) {
+    const toolKey = `${serverName}_${toolInfo.name}`;
+    result[toolKey] = createProxyTool(serverName, toolInfo, pool);
+  }
+
+  return result;
+}
+
 // ─── SKILL.md Generation ─────────────────────────────────────────────────────
 
-function formatParamDocs(tool: ToolInfo): string {
-  const schema = tool.inputSchema;
+function formatParamDocs(toolInfo: ToolInfo): string {
+  const schema = toolInfo.inputSchema;
   if (!schema?.properties || Object.keys(schema.properties).length === 0) {
     return "(none)";
   }
@@ -92,7 +316,10 @@ function generateSkillMd(serverName: string, tools: ToolInfo[]): string {
   const paramSections = tools
     .map((t) => `#### \`${t.name}\`\n${formatParamDocs(t)}`)
     .join("\n\n");
-  const triggers = tools.slice(0, 3).map((t) => t.name.replace(/_/g, " ")).join(", ");
+  const triggers = tools
+    .slice(0, 3)
+    .map((t) => t.name.replace(/_/g, " "))
+    .join(", ");
 
   return `---
 name: mcp-${serverName}
@@ -103,15 +330,8 @@ description: >
 
 # ${serverName} MCP Tools
 
-## Usage
-
-\`\`\`bash
-mcp-${serverName} <tool> [key=value ...]          # call tool
-mcp-${serverName} <tool> --params '{"key":"val"}' # complex params via JSON
-echo '{"key":"val"}' | mcp-${serverName} <tool> - # complex params via stdin
-mcp-${serverName} --list                           # list available tools
-mcp-${serverName} --schema <tool>                  # show tool schema
-\`\`\`
+Tools are registered as native opencode tools with prefix \`${serverName}_\`.
+Call them directly — no CLI wrapper needed.
 
 ## Tools
 
@@ -122,96 +342,6 @@ ${toolTable}
 ## Parameters
 
 ${paramSections}
-`;
-}
-
-// ─── CLI Wrapper Generation ──────────────────────────────────────────────────
-
-function generateCliWrapper(serverName: string, serverConfig: ServerConfig): string {
-  const schemaDir = join(AI_SKILLS_DIR, "schemas", serverName);
-
-  return `#!/usr/bin/env node
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { readFileSync, readdirSync } from "fs";
-import { join } from "path";
-
-const SCHEMA_DIR = ${JSON.stringify(schemaDir)};
-const SERVER_CMD = ${JSON.stringify(serverConfig.command)};
-const SERVER_ARGS = ${JSON.stringify(serverConfig.args || [])};
-
-function listTools() {
-  try {
-    return readdirSync(SCHEMA_DIR).filter(f => f.endsWith(".json")).map(f => f.slice(0, -5));
-  } catch { return []; }
-}
-
-function showSchema(toolName) {
-  try {
-    console.log(readFileSync(join(SCHEMA_DIR, toolName + ".json"), "utf8"));
-  } catch {
-    console.error("Schema not found for: " + toolName);
-    process.exit(1);
-  }
-}
-
-function parseKvArgs(argv) {
-  const params = {};
-  for (const pair of argv) {
-    const eq = pair.indexOf("=");
-    if (eq === -1) continue;
-    if (pair[eq - 1] === ":") {
-      const key = pair.slice(0, eq - 1);
-      try { params[key] = JSON.parse(pair.slice(eq + 1)); }
-      catch { params[key] = pair.slice(eq + 1); }
-    } else {
-      params[pair.slice(0, eq)] = pair.slice(eq + 1);
-    }
-  }
-  return params;
-}
-
-async function callTool(toolName, toolParams) {
-  const transport = new StdioClientTransport({ command: SERVER_CMD, args: SERVER_ARGS });
-  const client = new Client({ name: "mcp-${serverName}-cli", version: "1.0.0" });
-  await client.connect(transport);
-  try {
-    const result = await client.callTool({ name: toolName, arguments: toolParams });
-    const content = result.content ?? result;
-    if (Array.isArray(content)) {
-      for (const item of content) {
-        if (item.type === "text") process.stdout.write(item.text);
-        else console.log(JSON.stringify(item, null, 2));
-      }
-    } else {
-      console.log(JSON.stringify(content, null, 2));
-    }
-  } finally {
-    await client.close();
-  }
-}
-
-async function main() {
-  const argv = process.argv.slice(2);
-  if (argv[0] === "--list") { listTools().forEach(t => console.log(t)); return; }
-  if (argv[0] === "--schema") { showSchema(argv[1]); return; }
-  const toolName = argv[0];
-  if (!toolName) { console.error("Usage: mcp-${serverName} <tool> [key=value ...]"); process.exit(1); }
-
-  const paramsIdx = argv.indexOf("--params");
-  const stdinIdx = argv.indexOf("-");
-  let toolParams = {};
-  if (paramsIdx !== -1 && argv[paramsIdx + 1]) {
-    toolParams = JSON.parse(argv[paramsIdx + 1]);
-  } else if (stdinIdx !== -1) {
-    toolParams = JSON.parse(readFileSync("/dev/stdin", "utf8").trim());
-  } else {
-    toolParams = parseKvArgs(argv.slice(1).filter(a => !a.startsWith("--")));
-  }
-  await callTool(toolName, toolParams);
-}
-
-main().catch(err => { console.error(err.message); process.exit(1); });
 `;
 }
 
@@ -227,26 +357,19 @@ function writeSkill(serverName: string, content: string): void {
   writeFileSync(join(dir, "SKILL.md"), content, "utf8");
 }
 
-function writeCliWrapper(serverName: string, content: string): void {
-  ensureDir(DEFAULT_BIN_DIR);
-  const filePath = join(DEFAULT_BIN_DIR, `mcp-${serverName}`);
-  writeFileSync(filePath, content, "utf8");
-  chmodSync(filePath, 0o755);
-}
-
 function writeSchemas(serverName: string, tools: ToolInfo[]): void {
   const schemaDir = join(AI_SKILLS_DIR, "schemas", serverName);
   ensureDir(schemaDir);
-  for (const tool of tools) {
+  for (const toolInfo of tools) {
     writeFileSync(
-      join(schemaDir, `${tool.name}.json`),
-      JSON.stringify(tool.inputSchema ?? {}, null, 2),
+      join(schemaDir, `${toolInfo.name}.json`),
+      JSON.stringify(toolInfo.inputSchema ?? {}, null, 2),
       "utf8"
     );
   }
 }
 
-// ─── Generation Orchestrator ─────────────────────────────────────────────────
+// ─── Manifest ────────────────────────────────────────────────────────────────
 
 interface Manifest {
   generatedAt: string;
@@ -265,72 +388,142 @@ function loadManifest(): Manifest | null {
 
 function saveManifest(manifest: Manifest): void {
   ensureDir(AI_SKILLS_DIR);
-  writeFileSync(join(AI_SKILLS_DIR, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+  writeFileSync(
+    join(AI_SKILLS_DIR, "manifest.json"),
+    JSON.stringify(manifest, null, 2),
+    "utf8"
+  );
 }
 
-function configHash(servers: Record<string, ServerConfig>): string {
-  return JSON.stringify(Object.keys(servers).sort());
-}
-
-function needsRegeneration(servers: Record<string, ServerConfig>): boolean {
+function needsRegeneration(
+  servers: Record<string, SlimMcpConfig>
+): boolean {
   const manifest = loadManifest();
   if (!manifest) return true;
 
-  const manifestServers = Object.keys(manifest.servers).sort().join(",");
-  const currentServers = Object.keys(servers).sort().join(",");
-  return manifestServers !== currentServers;
+  const manifestKeys = Object.keys(manifest.servers).sort().join(",");
+  const currentKeys = Object.keys(servers).sort().join(",");
+  return manifestKeys !== currentKeys;
 }
 
-async function generateAll(servers: Record<string, ServerConfig>): Promise<void> {
-  const manifest: Manifest = { generatedAt: new Date().toISOString(), servers: {} };
+// ─── Generation Orchestrator ─────────────────────────────────────────────────
 
+interface GenerationResult {
+  tools: Record<string, ToolDefinition>;
+  serverTools: Record<string, ToolInfo[]>;
+}
+
+async function generateAll(
+  servers: Record<string, SlimMcpConfig>,
+  pool: McpConnectionPool
+): Promise<GenerationResult> {
+  const manifest: Manifest = {
+    generatedAt: new Date().toISOString(),
+    servers: {},
+  };
+  let allTools: Record<string, ToolDefinition> = {};
+  const serverTools: Record<string, ToolInfo[]> = {};
+
+  const entries = Object.entries(servers);
   const results = await Promise.allSettled(
-    Object.entries(servers).map(async ([serverName, serverConfig]) => {
-      const tools = await introspectServer(serverConfig);
+    entries.map(async ([serverName, config]) => {
+      pool.register(serverName, config);
+      const tools = await introspectServer(config);
       if (tools.length === 0) return;
 
+      serverTools[serverName] = tools;
       writeSkill(serverName, generateSkillMd(serverName, tools));
-      writeCliWrapper(serverName, generateCliWrapper(serverName, serverConfig));
       writeSchemas(serverName, tools);
+
+      const proxyTools = buildProxyTools(serverName, tools, pool);
+      allTools = { ...allTools, ...proxyTools };
+
       manifest.servers[serverName] = { toolCount: tools.length };
     })
   );
 
+  // Log failures for visibility
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === "rejected") {
+      const name = entries[i][0];
+      console.error(
+        `[slim-mcp] Failed to introspect ${name}:`,
+        (results[i] as PromiseRejectedResult).reason
+      );
+    }
+  }
+
   saveManifest(manifest);
+  return { tools: allTools, serverTools };
 }
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
 const SlimMcpPlugin: Plugin = async (input) => {
   const projectDir = input.directory;
-  const servers = findMcpConfig(projectDir);
+  const slimEntries = extractSlimMcpEntries(projectDir);
+  const pool = new McpConnectionPool();
 
-  if (servers && needsRegeneration(servers)) {
-    generateAll(servers).catch(() => {});
+  let proxyTools: Record<string, ToolDefinition> = {};
+
+  if (Object.keys(slimEntries).length > 0) {
+    if (needsRegeneration(slimEntries)) {
+      const result = await generateAll(slimEntries, pool);
+      proxyTools = result.tools;
+    } else {
+      // Skills already generated — just register pool + build tools from cached schemas
+      for (const [name, config] of Object.entries(slimEntries)) {
+        pool.register(name, config);
+
+        const schemaDir = join(AI_SKILLS_DIR, "schemas", name);
+        if (!existsSync(schemaDir)) continue;
+
+        const { readdirSync } = await import("fs");
+        const schemaFiles = readdirSync(schemaDir).filter((f: string) =>
+          f.endsWith(".json")
+        );
+
+        const tools: ToolInfo[] = schemaFiles.map((f: string) => {
+          const toolName = f.slice(0, -5);
+          const schema = JSON.parse(
+            readFileSync(join(schemaDir, f), "utf8")
+          );
+          return { name: toolName, inputSchema: schema };
+        });
+
+        const toolsForServer = buildProxyTools(name, tools, pool);
+        proxyTools = { ...proxyTools, ...toolsForServer };
+      }
+    }
   }
 
   return {
     config: async (cfg: any) => {
+      // Disable slim MCPs so opencode doesn't load their tool schemas
+      if (cfg.mcp) {
+        for (const [name, entry] of Object.entries(cfg.mcp) as [
+          string,
+          any,
+        ][]) {
+          if (entry.slim === true) {
+            entry.enabled = false;
+          }
+        }
+      }
+
+      // Register skills paths
       cfg.skills = cfg.skills || {};
       cfg.skills.paths = cfg.skills.paths || [];
 
       if (!cfg.skills.paths.includes(DEFAULT_SKILLS_DIR)) {
         cfg.skills.paths.push(DEFAULT_SKILLS_DIR);
       }
-
       if (!cfg.skills.paths.includes(SKILLS_DIR)) {
         cfg.skills.paths.push(SKILLS_DIR);
       }
     },
 
-    "shell.env": async (_input, output) => {
-      if (!existsSync(DEFAULT_BIN_DIR)) return;
-
-      const currentPath = output.env.PATH || process.env.PATH || "";
-      if (!currentPath.includes(DEFAULT_BIN_DIR)) {
-        output.env.PATH = `${DEFAULT_BIN_DIR}:${currentPath}`;
-      }
-    },
+    tool: proxyTools,
   };
 };
 

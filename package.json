@@ -1,7 +1,7 @@
 {
   "name": "opencode-slim-mcp",
-  "version": "1.1.0",
-  "description": "OpenCode plugin — convert MCP servers into skills + CLI wrappers with PATH injection",
+  "version": "0.1.2",
+  "description": "OpenCode plugin — convert MCP servers with slim:true into skills + native proxy tools with connection pooling",
   "keywords": ["opencode", "plugin", "mcp", "skills"],
   "license": "MIT",
   "author": "Mumme-IT",
