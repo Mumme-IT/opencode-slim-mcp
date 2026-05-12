@@ -1,16 +1,15 @@
 # opencode-slim-mcp
 
-OpenCode plugin that converts MCP servers into **skills** + **CLI wrappers**. Agent discovers tools via on-demand skill loading (zero idle token cost), calls them via shell.
+OpenCode plugin that converts MCP servers marked `slim: true` into **skills** + a single **native proxy tool**. Agent discovers tools via on-demand skill loading (zero idle token cost), calls them through a pooled MCP connection.
 
 ## Problem
 
 - Full MCP registration = token bloat (hundreds of schemas in context)
-- `mcp-lazy-proxy` strips schemas → agent flies blind
-- No middle ground existed
+- No middle ground between full registration and blind proxying
 
-## Install
+## How to Install
 
-Add to `opencode.json`:
+### 1. Add the plugin to your `opencode.json`
 
 ```json
 {
@@ -18,62 +17,101 @@ Add to `opencode.json`:
 }
 ```
 
-Place MCP server config as `mcp-lazy-proxy.json` or `mcp.json` in project root or `~/.config/opencode/`.
+### 2. Mark MCP servers with `slim: true`
+
+In your project or global `opencode.json`, add `"slim": true` to any MCP server you want managed by this plugin:
 
 ```json
 {
-  "mcpServers": {
-    "gitea": { "command": "gitea-mcp", "args": ["-t", "stdio"] }
+  "mcp": {
+    "todoist": {
+      "command": "npx",
+      "args": ["-y", "@anthropics/todoist-mcp"],
+      "slim": true
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@anthropics/playwright-mcp"],
+      "slim": true
+    },
+    "regular-mcp": {
+      "command": "some-mcp-server",
+      "args": ["--stdio"]
+    }
   }
 }
 ```
 
-Both `{ mcpServers: {} }` and `{ servers: {} }` shapes supported.
+Servers **without** `slim: true` are left untouched — opencode handles them normally.
+
+### 3. (Optional) Disable a slim server
+
+Set `"enabled": false` to disable a server without removing it from config:
+
+```json
+{
+  "mcp": {
+    "todoist": {
+      "command": "npx",
+      "args": ["-y", "@anthropics/todoist-mcp"],
+      "slim": true,
+      "enabled": false
+    }
+  }
+}
+```
+
+Disabled servers appear as `[disabled]` in `mcp-status` but won't start, generate skills, or accept tool calls.
 
 ## What Happens on Startup
 
-1. Plugin discovers MCP config (project dir → `~/.config/opencode/`)
-2. Introspects each server for available tools
-3. Generates SKILL.md files + CLI wrappers + schema cache
-4. Registers skills path via `config` hook
-5. Injects `~/.config/opencode/bin` into agent `PATH` via `shell.env` hook
+1. Plugin reads `opencode.json` (project dir + `~/.config/opencode/`)
+2. Extracts entries with `slim: true` (skips disabled ones)
+3. Introspects each server for available tools
+4. Generates `SKILL.md` files + schema cache per server
+5. Registers a single `mcp` tool that proxies calls to any slim server
+6. Sets `enabled: false` on slim entries in host config (prevents double-handling)
 
-Regeneration only triggers when server list changes.
+Regeneration only triggers when the enabled server list changes.
 
-## Generated CLI Usage
+## Plugin Configuration
 
-```bash
-mcp-<server> <tool> [key=value ...]         # simple params
-mcp-<server> <tool> key:='["json","val"]'   # complex params (httpie convention)
-mcp-<server> <tool> --params '{"k":"v"}'    # full JSON params
-echo '{"k":"v"}' | mcp-<server> <tool> -    # params via stdin
-mcp-<server> --list                          # list available tools
-mcp-<server> --schema <tool>                 # show tool input schema
+Create `.ai-skills/slim-mcp/config.json` in project root or `~/.config/opencode/`:
+
+```json
+{
+  "lazyLoading": true,
+  "idleShutdownMs": 300000
+}
 ```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `lazyLoading` | `true` | Connect to servers on first tool call (vs. eagerly on startup) |
+| `idleShutdownMs` | `300000` | Disconnect idle servers after this duration (ms) |
+
+## Tools Provided
+
+### `mcp`
+
+Calls a tool on any enabled slim MCP server.
+
+```
+mcp(server: "todoist", tool: "add-tasks", params: '{"tasks": [...]}')
+```
+
+### `mcp-status`
+
+Shows status of all slim MCP servers: `connected`, `pending`, `disabled`, or `error`.
 
 ## Output Structure
 
 ```
-~/.config/opencode/
+~/.config/opencode/.ai-skills/slim-mcp/
 ├── skills/mcp-<server>/SKILL.md     # Tool names, descriptions, param docs
-├── bin/mcp-<server>                 # Executable CLI wrapper (Node.js)
-└── .ai-skills/slim-mcp/
-    ├── schemas/<server>/*.json      # Per-tool input schemas
-    └── manifest.json                # Generation metadata
-```
-
-## Manual Regeneration
-
-Standalone CLI available for manual re-introspection:
-
-```bash
-npx slim-mcp-generate [config.json] [options]
-
-Options:
-  --output-dir <path>      Base output directory (default: ~/.config/opencode)
-  --skills-dir <path>      Override skills output path
-  --bin-dir <path>         Override CLI wrappers output path
-  --ai-skills-dir <path>   Override schema cache path
+├── schemas/<server>/*.json           # Per-tool input schemas
+├── manifest.json                     # Generation metadata
+└── config.json                       # Plugin configuration
 ```
 
 ## Prerequisites
