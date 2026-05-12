@@ -12,6 +12,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
@@ -23,7 +24,10 @@ const AI_SKILLS_DIR = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface SlimMcpConfig {
-  command: string[];
+  type?: "local" | "remote";
+  command?: string[];
+  url?: string;
+  headers?: Record<string, string>;
   environment?: Record<string, string>;
   slim?: boolean;
   enabled?: boolean;
@@ -106,8 +110,8 @@ function normalizeCommand(entry: any): string[] | null {
   return null;
 }
 
-function isLocalMcp(entry: any): boolean {
-  return !entry.type || entry.type === "local";
+function isSupportedMcp(entry: any): boolean {
+  return !entry.type || entry.type === "local" || entry.type === "remote";
 }
 
 function extractSlimMcpEntries(
@@ -122,18 +126,32 @@ function extractSlimMcpEntries(
       if (!mcp) continue;
 
       for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
-        if (entry.slim !== true || !isLocalMcp(entry)) continue;
+        if (entry.slim !== true || !isSupportedMcp(entry)) continue;
 
-        const command = normalizeCommand(entry);
-        if (!command) continue;
+        const isRemote = entry.type === "remote";
 
-        slimEntries[name] = {
-          command,
-          environment: entry.environment,
-          slim: true,
-          enabled: entry.enabled,
-          timeout: entry.timeout,
-        };
+        if (isRemote) {
+          if (!entry.url) continue;
+          slimEntries[name] = {
+            type: "remote",
+            url: entry.url,
+            headers: entry.headers,
+            slim: true,
+            enabled: entry.enabled,
+            timeout: entry.timeout,
+          };
+        } else {
+          const command = normalizeCommand(entry);
+          if (!command) continue;
+          slimEntries[name] = {
+            type: "local",
+            command,
+            environment: entry.environment,
+            slim: true,
+            enabled: entry.enabled,
+            timeout: entry.timeout,
+          };
+        }
       }
     } catch {
       continue;
@@ -227,17 +245,29 @@ class McpConnectionPool {
 
     this.errors.delete(name);
 
-    const env = config.environment
-      ? { ...process.env, ...config.environment }
-      : undefined;
+    let transport;
 
-    const [command, ...args] = config.command;
-    const transport = new StdioClientTransport({
-      command,
-      args,
-      env,
-      stderr: "pipe",
-    });
+    if (config.type === "remote") {
+      const url = new URL(config.url!);
+      transport = new StreamableHTTPClientTransport(url, {
+        requestInit: config.headers
+          ? { headers: config.headers }
+          : undefined,
+      });
+    } else {
+      const env = config.environment
+        ? { ...process.env, ...config.environment }
+        : undefined;
+
+      const [command, ...args] = config.command!;
+      transport = new StdioClientTransport({
+        command,
+        args,
+        env,
+        stderr: "pipe",
+      });
+    }
+
     const client = new Client({
       name: `slim-mcp-${name}`,
       version: "1.0.0",
@@ -284,17 +314,28 @@ class McpConnectionPool {
 // ─── Introspection ───────────────────────────────────────────────────────────
 
 async function introspectServer(config: SlimMcpConfig): Promise<ToolInfo[]> {
-  const [command, ...args] = config.command;
-  const env = config.environment
-    ? { ...process.env, ...config.environment }
-    : undefined;
+  let transport;
 
-  const transport = new StdioClientTransport({
-    command,
-    args,
-    env,
-    stderr: "pipe",
-  });
+  if (config.type === "remote") {
+    const url = new URL(config.url!);
+    transport = new StreamableHTTPClientTransport(url, {
+      requestInit: config.headers
+        ? { headers: config.headers }
+        : undefined,
+    });
+  } else {
+    const [command, ...args] = config.command!;
+    const env = config.environment
+      ? { ...process.env, ...config.environment }
+      : undefined;
+    transport = new StdioClientTransport({
+      command,
+      args,
+      env,
+      stderr: "pipe",
+    });
+  }
+
   const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
 
   try {
