@@ -133,7 +133,7 @@ class McpConnectionPool {
       : undefined;
 
     const [command, ...args] = config.command;
-    const transport = new StdioClientTransport({ command, args, env });
+    const transport = new StdioClientTransport({ command, args, env, stderr: "pipe" });
     const client = new Client({
       name: `slim-mcp-${name}`,
       version: "1.0.0",
@@ -179,8 +179,7 @@ async function introspectServer(config: SlimMcpConfig): Promise<ToolInfo[]> {
     ? { ...process.env, ...config.environment }
     : undefined;
 
-  const transport = new StdioClientTransport({ command, args, env });
-  const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
+  const transport = new StdioClientTransport({ command, args, env, stderr: "pipe" });  const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
 
   try {
     await client.connect(transport);
