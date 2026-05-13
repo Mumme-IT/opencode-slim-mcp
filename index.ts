@@ -279,6 +279,7 @@ class McpConnectionPool {
   private authErrors = new Set<string>();
   private idleShutdownMs: number;
   private lazy: boolean;
+  onAuthError?: (name: string) => void;
 
   constructor(pluginConfig: SlimPluginConfig) {
     this.idleShutdownMs = pluginConfig.idleShutdownMs;
@@ -318,8 +319,10 @@ class McpConnectionPool {
   }
 
   markNeedsAuth(name: string, error: string): void {
+    const isNew = !this.authErrors.has(name);
     this.authErrors.add(name);
     this.errors.set(name, error);
+    if (isNew) this.onAuthError?.(name);
   }
 
   async connectAll(): Promise<void> {
@@ -397,7 +400,9 @@ class McpConnectionPool {
     } catch (err: any) {
       const msg = String(err?.message ?? err);
       if (isAuthError(msg)) {
+        const isNew = !this.authErrors.has(name);
         this.authErrors.add(name);
+        if (isNew) this.onAuthError?.(name);
       }
       this.errors.set(name, msg);
       throw err;
@@ -804,6 +809,24 @@ const SlimMcpPlugin: Plugin = async (input) => {
     await pool.connectAll();
   }
 
+  // Show TUI toast when auth errors are detected (startup or lazy connect)
+  pool.onAuthError = (name) => {
+    input.client.tui.showToast({
+      title: `MCP: ${name}`,
+      message: `Needs authentication. Run: opencode mcp auth ${name}`,
+      variant: "warning",
+      duration: 10_000,
+    }).catch(() => {
+      // TUI may not be ready yet during startup; ignore
+    });
+  };
+
+  // Fire toasts for any auth errors detected during eager connect
+  for (const name of pool.serversNeedingAuth()) {
+    // Delay so TUI has time to initialize
+    setTimeout(() => pool.onAuthError?.(name), 2_000);
+  }
+
   return {
     config: async (cfg: any) => {
       if (cfg.mcp) {
@@ -811,7 +834,11 @@ const SlimMcpPlugin: Plugin = async (input) => {
           (name) => slimEntries[name].enabled !== false
         ));
         for (const name of slimNames) {
-          delete cfg.mcp[name];
+          if (cfg.mcp[name]) {
+            // Disable instead of deleting so `opencode mcp auth <name>` still
+            // finds the server entry. The plugin manages the actual connection.
+            cfg.mcp[name].enabled = false;
+          }
         }
       }
 
