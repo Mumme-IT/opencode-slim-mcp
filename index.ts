@@ -850,12 +850,13 @@ const SlimMcpPlugin: Plugin = async (input) => {
         ));
         for (const name of slimNames) {
           if (!cfg.mcp[name]) continue;
-          if (slimEntries[name].type === "remote") {
-            // Keep remote entries so `opencode mcp auth <name>` can find them.
-            // Core will also connect — accepted trade-off for working auth flow.
+          if (slimEntries[name].type === "remote" && !loadMcpAuth(name)) {
+            // Keep remote entries without stored auth so
+            // `opencode mcp auth <name>` can find them.
             continue;
           }
-          // Delete local (stdio) entries to prevent double-process spawn.
+          // Delete entries the plugin manages: local (stdio) servers
+          // and remote servers with valid auth tokens.
           delete cfg.mcp[name];
         }
       }
