@@ -812,10 +812,12 @@ const SlimMcpPlugin: Plugin = async (input) => {
   // Show TUI toast when auth errors are detected (startup or lazy connect)
   pool.onAuthError = (name) => {
     input.client.tui.showToast({
-      title: `MCP: ${name}`,
-      message: `Needs authentication. Run: opencode mcp auth ${name}`,
-      variant: "warning",
-      duration: 10_000,
+      body: {
+        title: `MCP: ${name}`,
+        message: `Needs authentication. Run: opencode mcp auth ${name}`,
+        variant: "warning",
+        duration: 10_000,
+      },
     }).catch(() => {
       // TUI may not be ready yet during startup; ignore
     });
@@ -834,11 +836,14 @@ const SlimMcpPlugin: Plugin = async (input) => {
           (name) => slimEntries[name].enabled !== false
         ));
         for (const name of slimNames) {
-          if (cfg.mcp[name]) {
-            // Disable instead of deleting so `opencode mcp auth <name>` still
-            // finds the server entry. The plugin manages the actual connection.
-            cfg.mcp[name].enabled = false;
+          if (!cfg.mcp[name]) continue;
+          if (slimEntries[name].type === "remote") {
+            // Keep remote entries so `opencode mcp auth <name>` can find them.
+            // Core will also connect — accepted trade-off for working auth flow.
+            continue;
           }
+          // Delete local (stdio) entries to prevent double-process spawn.
+          delete cfg.mcp[name];
         }
       }
 
