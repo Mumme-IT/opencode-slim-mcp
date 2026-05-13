@@ -819,7 +819,7 @@ const SlimMcpPlugin: Plugin = async (input) => {
         title: `MCP: ${name}`,
         message: `Needs authentication. Run: opencode mcp auth ${name}`,
         variant: "warning",
-        duration: 10_000,
+        duration: 30_000,
       },
     }).catch(() => {
       // TUI may not be ready yet during startup; ignore
