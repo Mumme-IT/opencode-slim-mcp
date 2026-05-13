@@ -28,12 +28,22 @@ jobs:
           VERSION="${TAG#v}"
           bun x json -I -f package.json -e "this.version='${VERSION}'"
 
+      - name: Verify NPM_TOKEN is set
+        run: |
+          if [ -z "$NPM_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is empty. Check secret scope (repo vs environment)."
+            exit 1
+          fi
+          echo "NPM_TOKEN is set (length: ${#NPM_TOKEN})"
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       - name: Configure npm registry auth
-        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > ~/.npmrc
+        run: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" > .npmrc
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to npm
         run: bun publish --access public
         env:
-          BUN_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
