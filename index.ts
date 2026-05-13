@@ -520,7 +520,7 @@ function createMcpTool(pool: McpConnectionPool) {
     description:
       "Call a tool on a slim MCP server. " +
       "IMPORTANT: Before calling this tool, you MUST first load the skill named \"mcp-<server>\" " +
-      "(e.g. skill \"mcp-todoist\") to discover available tool names and their parameters. " +
+      "(e.g. skill \"mcp-todoist\") to discover available tool names, parameters, and the required confirmation token. " +
       "Do NOT guess tool names or parameters — load the skill first. " +
       "Available servers: " +
       pool.enabledServers().join(", "),
@@ -537,9 +537,25 @@ function createMcpTool(pool: McpConnectionPool) {
         .describe(
           'Tool parameters as a JSON string. Example: \'{"query": "test"}\'. Omit if the tool takes no parameters.'
         ),
+      _confirm: tool.schema
+        .string()
+        .describe(
+          "Confirmation token from the mcp-<server> skill. Load the skill to obtain this value. The call will be rejected without it."
+        ),
     },
     async execute(args, ctx) {
       ctx.metadata({ title: `mcp: ${args.server}/${args.tool}` });
+
+      // Gate: reject if skill was not loaded (missing or wrong confirmation token)
+      const expectedToken = `slim-${args.server}`;
+      if (args._confirm !== expectedToken) {
+        return (
+          `DENIED: You must load the skill first.\n` +
+          `Run: skill(name="mcp-${args.server}")\n` +
+          `The skill contains the required confirmation token and lists all available tools and parameters.\n` +
+          `Do NOT guess — load the skill, then retry.`
+        );
+      }
 
       let client: Client;
       try {
@@ -693,6 +709,7 @@ The \`mcp\` tool requires these parameters:
 - **server** (string, required): Always \`"${serverName}"\`
 - **tool** (string, required): One of the tool names listed below
 - **params** (string, optional): A JSON string with tool parameters
+- **_confirm** (string, required): Always \`"slim-${serverName}"\`
 
 ### Example
 
@@ -702,6 +719,7 @@ To call \`${exTool.name}\`, invoke the \`mcp\` tool like this:
 server: "${serverName}"
 tool: "${exTool.name}"
 params: '${exParams}'
+_confirm: "slim-${serverName}"
 \`\`\`
 
 ## Available Tools
