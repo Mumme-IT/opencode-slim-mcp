@@ -116,6 +116,7 @@ interface SlimMcpConfig {
 interface SlimPluginConfig {
   lazyLoading: boolean;
   idleShutdownMs: number;
+  debugging: boolean;
 }
 
 interface ToolInfo {
@@ -131,12 +132,15 @@ type ServerState = "pending" | "connected" | "disabled" | "error" | "needs_auth"
 const AUTH_ERROR_PATTERNS = [
   /no access token/i,
   /access token.*provided/i,
+  /invalid.?_?token/i,
   /unauthorized/i,
   /401/,
   /authentication required/i,
+  /authorizationCode is required/i,
   /not authenticated/i,
   /not logged in/i,
   /login required/i,
+  /prepareTokenRequest/i,
 ];
 
 function isAuthError(error: string): boolean {
@@ -179,13 +183,14 @@ function loadPluginConfig(projectDir: string): SlimPluginConfig {
         idleShutdownMs: raw["lazy-idle-shutdown-interval"]
           ? parseIntervalMs(String(raw["lazy-idle-shutdown-interval"]))
           : DEFAULT_IDLE_MS,
+        debugging: raw["debugging"] === true,
       };
     } catch {
       continue;
     }
   }
 
-  return { lazyLoading: true, idleShutdownMs: DEFAULT_IDLE_MS };
+  return { lazyLoading: true, idleShutdownMs: DEFAULT_IDLE_MS, debugging: false };
 }
 
 // ─── MCP Config Discovery ────────────────────────────────────────────────────
@@ -279,11 +284,13 @@ class McpConnectionPool {
   private authErrors = new Set<string>();
   private idleShutdownMs: number;
   private lazy: boolean;
+  private debugging: boolean;
   onAuthError?: (name: string) => void;
 
   constructor(pluginConfig: SlimPluginConfig) {
     this.idleShutdownMs = pluginConfig.idleShutdownMs;
     this.lazy = pluginConfig.lazyLoading;
+    this.debugging = pluginConfig.debugging;
   }
 
   register(name: string, config: SlimMcpConfig): void {
@@ -336,7 +343,7 @@ class McpConnectionPool {
         const reason = (results[i] as PromiseRejectedResult).reason;
         const msg = String(reason?.message ?? reason);
         this.errors.set(names[i], msg);
-        if (!isAuthError(msg)) {
+        if (this.debugging) {
           console.error(`[slim-mcp] Failed to connect ${names[i]}:`, reason);
         }
       }
@@ -741,7 +748,8 @@ function needsRegeneration(servers: Record<string, SlimMcpConfig>): boolean {
 
 async function generateAll(
   servers: Record<string, SlimMcpConfig>,
-  pool: McpConnectionPool
+  pool: McpConnectionPool,
+  debugging: boolean,
 ): Promise<void> {
   const manifest: Manifest = {
     version: MANIFEST_VERSION,
@@ -767,10 +775,12 @@ async function generateAll(
   for (let i = 0; i < results.length; i++) {
     if (results[i].status === "rejected") {
       const name = entries[i][0];
-      console.error(
-        `[slim-mcp] Failed to introspect ${name}:`,
-        (results[i] as PromiseRejectedResult).reason
-      );
+      if (debugging) {
+        console.error(
+          `[slim-mcp] Failed to introspect ${name}:`,
+          (results[i] as PromiseRejectedResult).reason
+        );
+      }
     }
   }
 
@@ -804,7 +814,7 @@ const SlimMcpPlugin: Plugin = async (input) => {
 
   // Regenerate skills if needed
   if (needsRegeneration(slimEntries)) {
-    await generateAll(slimEntries, pool);
+    await generateAll(slimEntries, pool, pluginConfig.debugging);
   }
 
   // Eager connect if lazy-loading is disabled
