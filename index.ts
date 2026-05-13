@@ -334,8 +334,11 @@ class McpConnectionPool {
     for (let i = 0; i < results.length; i++) {
       if (results[i].status === "rejected") {
         const reason = (results[i] as PromiseRejectedResult).reason;
-        this.errors.set(names[i], String(reason?.message ?? reason));
-        console.error(`[slim-mcp] Failed to connect ${names[i]}:`, reason);
+        const msg = String(reason?.message ?? reason);
+        this.errors.set(names[i], msg);
+        if (!isAuthError(msg)) {
+          console.error(`[slim-mcp] Failed to connect ${names[i]}:`, reason);
+        }
       }
     }
   }
