@@ -47,6 +47,11 @@ function loadMcpAuth(serverName: string): StoredMcpAuth | undefined {
   }
 }
 
+function hasValidMcpAuth(serverName: string): boolean {
+  const auth = loadMcpAuth(serverName);
+  return !!(auth?.tokens?.accessToken);
+}
+
 class StoredOAuthClientProvider implements OAuthClientProvider {
   private stored: StoredMcpAuth;
   private serverName: string;
@@ -851,9 +856,12 @@ const SlimMcpPlugin: Plugin = async (input) => {
         for (const name of slimNames) {
           if (!cfg.mcp[name]) continue;
           if (slimEntries[name].type === "remote") {
-            // Disable remote entries so core won't spawn them, but
-            // `opencode mcp auth <name>` can still find them.
-            cfg.mcp[name].enabled = false;
+            if (hasValidMcpAuth(name)) {
+              // Has valid token → disable so core won't spawn, plugin handles.
+              cfg.mcp[name].enabled = false;
+            }
+            // No valid token → keep entry enabled so `opencode mcp auth`
+            // works without "Unexpected status: disabled" warning.
           } else {
             // Delete local (stdio) entries to prevent double-process spawn.
             delete cfg.mcp[name];
