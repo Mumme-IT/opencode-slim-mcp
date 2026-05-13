@@ -760,12 +760,17 @@ function writeSchemas(serverName: string, tools: ToolInfo[]): void {
 
 // ─── Manifest ────────────────────────────────────────────────────────────────
 
-const MANIFEST_VERSION = 3;
+const MANIFEST_VERSION = 4;
+
+interface ManifestServerEntry {
+  toolCount: number;
+  tools: { name: string; description: string }[];
+}
 
 interface Manifest {
   version?: number;
   generatedAt: string;
-  servers: Record<string, { toolCount: number }>;
+  servers: Record<string, ManifestServerEntry>;
 }
 
 function loadManifest(): Manifest | null {
@@ -824,7 +829,10 @@ async function generateAll(
 
       writeSkill(serverName, generateSkillMd(serverName, tools));
       writeSchemas(serverName, tools);
-      manifest.servers[serverName] = { toolCount: tools.length };
+      manifest.servers[serverName] = {
+        toolCount: tools.length,
+        tools: tools.map((t) => ({ name: t.name, description: firstLine(t.description) })),
+      };
     })
   );
 
@@ -937,19 +945,35 @@ const SlimMcpPlugin: Plugin = async (input) => {
     },
 
     "experimental.chat.system.transform": async (_input, output) => {
-      // Always inject skill-first workflow instructions for MCP servers
+      // Always inject skill-first workflow + tool catalog for MCP servers
       const servers = pool.enabledServers();
       if (servers.length > 0) {
+        const manifest = loadManifest();
         const skillList = servers.map((s) => `"mcp-${s}"`).join(", ");
+
+        // Build per-server tool catalog from manifest (names only, keep short)
+        let catalog = "";
+        if (manifest?.servers) {
+          for (const s of servers) {
+            const entry = manifest.servers[s];
+            if (!entry?.tools?.length) continue;
+            const names = entry.tools.map((t) => t.name).join(", ");
+            catalog += `\n- ${s} (skill: "mcp-${s}"): ${names}`;
+          }
+        }
+
         output.system.push(
           `<system-reminder>\n` +
           `MCP TOOL USAGE — MANDATORY WORKFLOW:\n` +
           `Before calling the "mcp" tool, you MUST first load the matching skill using the skill tool.\n` +
           `Available MCP skills: ${skillList}.\n` +
           `Step 1: Load skill (e.g. skill name="mcp-${servers[0]}").\n` +
-          `Step 2: Read the skill output to find available tool names and parameters.\n` +
-          `Step 3: Call the mcp tool with server, tool, and params.\n` +
-          `Do NOT guess tool names or parameters. Always load the skill first.\n` +
+          `Step 2: Read the skill output to find tool parameters and the required confirmation token.\n` +
+          `Step 3: Call the mcp tool with server, tool, params, and _confirm.\n` +
+          `Do NOT guess parameters or confirmation tokens. Always load the skill first.\n` +
+          (catalog
+            ? `\nAvailable tools per server:${catalog}`
+            : "") +
           `</system-reminder>`
         );
       }
