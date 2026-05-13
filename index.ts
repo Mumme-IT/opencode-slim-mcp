@@ -519,21 +519,23 @@ function createMcpTool(pool: McpConnectionPool) {
   return tool({
     description:
       "Call a tool on a slim MCP server. " +
-      "Use the mcp-<server> skill to discover available tools and parameters. " +
+      "IMPORTANT: Before calling this tool, you MUST first load the skill named \"mcp-<server>\" " +
+      "(e.g. skill \"mcp-todoist\") to discover available tool names and their parameters. " +
+      "Do NOT guess tool names or parameters — load the skill first. " +
       "Available servers: " +
       pool.enabledServers().join(", "),
     args: {
       server: tool.schema
         .string()
-        .describe("MCP server name, e.g. todoist, playwright"),
+        .describe("MCP server name — one of: " + pool.enabledServers().join(", ")),
       tool: tool.schema
         .string()
-        .describe("Tool name on that server, e.g. web_search, add-tasks"),
+        .describe("Tool name on that server. You MUST load the mcp-<server> skill first to see available tool names."),
       params: tool.schema
         .string()
         .optional()
         .describe(
-          'Tool parameters as JSON string, e.g. \'{"query": "test"}\''
+          'Tool parameters as a JSON string. Example: \'{"query": "test"}\'. Omit if the tool takes no parameters.'
         ),
     },
     async execute(args, ctx) {
@@ -642,6 +644,22 @@ function formatParamDocs(toolInfo: ToolInfo): string {
     .join("\n");
 }
 
+function buildExampleParams(t: ToolInfo): string {
+  const schema = t.inputSchema;
+  if (!schema?.properties || Object.keys(schema.properties).length === 0) {
+    return "{}";
+  }
+  const example: Record<string, any> = {};
+  const required = new Set(schema.required || []);
+  for (const [name, prop] of Object.entries(schema.properties) as [string, any][]) {
+    if (!required.has(name) && Object.keys(example).length >= 2) continue;
+    if (prop.type === "number" || prop.type === "integer") example[name] = 1;
+    else if (prop.type === "boolean") example[name] = true;
+    else example[name] = "...";
+  }
+  return JSON.stringify(example);
+}
+
 function generateSkillMd(serverName: string, tools: ToolInfo[]): string {
   const triggers = tools
     .slice(0, 3)
@@ -656,6 +674,10 @@ function generateSkillMd(serverName: string, tools: ToolInfo[]): string {
     .map((t) => `#### \`${t.name}\`\n${formatParamDocs(t)}`)
     .join("\n\n");
 
+  // Build a concrete example using the first tool
+  const exTool = tools[0];
+  const exParams = buildExampleParams(exTool);
+
   return `---
 name: mcp-${serverName}
 description: >
@@ -663,12 +685,23 @@ description: >
   Triggers on: ${serverName}, ${triggers}.
 ---
 
-# ${serverName} MCP Tools
+# How to call ${serverName} tools
 
-Call via the \`mcp\` tool:
+You MUST use the \`mcp\` tool to call ${serverName}. Do NOT run shell commands. Do NOT invent other tools.
+
+The \`mcp\` tool requires these parameters:
+- **server** (string, required): Always \`"${serverName}"\`
+- **tool** (string, required): One of the tool names listed below
+- **params** (string, optional): A JSON string with tool parameters
+
+### Example
+
+To call \`${exTool.name}\`, invoke the \`mcp\` tool like this:
 
 \`\`\`
-mcp(server="${serverName}", tool="<tool_name>", params='{"key": "value"}')
+server: "${serverName}"
+tool: "${exTool.name}"
+params: '${exParams}'
 \`\`\`
 
 ## Available Tools
@@ -677,7 +710,7 @@ mcp(server="${serverName}", tool="<tool_name>", params='{"key": "value"}')
 |---|---|
 ${toolTable}
 
-## Parameters
+## Parameter Reference
 
 ${paramSections}
 `;
@@ -886,6 +919,23 @@ const SlimMcpPlugin: Plugin = async (input) => {
     },
 
     "experimental.chat.system.transform": async (_input, output) => {
+      // Always inject skill-first workflow instructions for MCP servers
+      const servers = pool.enabledServers();
+      if (servers.length > 0) {
+        const skillList = servers.map((s) => `"mcp-${s}"`).join(", ");
+        output.system.push(
+          `<system-reminder>\n` +
+          `MCP TOOL USAGE — MANDATORY WORKFLOW:\n` +
+          `Before calling the "mcp" tool, you MUST first load the matching skill using the skill tool.\n` +
+          `Available MCP skills: ${skillList}.\n` +
+          `Step 1: Load skill (e.g. skill name="mcp-${servers[0]}").\n` +
+          `Step 2: Read the skill output to find available tool names and parameters.\n` +
+          `Step 3: Call the mcp tool with server, tool, and params.\n` +
+          `Do NOT guess tool names or parameters. Always load the skill first.\n` +
+          `</system-reminder>`
+        );
+      }
+
       const needsAuth = pool.serversNeedingAuth();
       if (needsAuth.length === 0) return;
 

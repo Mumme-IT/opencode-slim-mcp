@@ -92,9 +92,27 @@ function buildTriggerHints(serverName, tools) {
   return names.join(", ");
 }
 
+function buildExampleParams(t) {
+  const schema = t.inputSchema;
+  if (!schema?.properties || Object.keys(schema.properties).length === 0) {
+    return "{}";
+  }
+  const example = {};
+  const required = new Set(schema.required || []);
+  for (const [name, prop] of Object.entries(schema.properties)) {
+    if (!required.has(name) && Object.keys(example).length >= 2) continue;
+    if (prop.type === "number" || prop.type === "integer") example[name] = 1;
+    else if (prop.type === "boolean") example[name] = true;
+    else example[name] = "...";
+  }
+  return JSON.stringify(example);
+}
+
 function generateSkillMd(serverName, tools) {
   const skillName = `mcp-${serverName}`;
   const triggers = buildTriggerHints(serverName, tools);
+  const exTool = tools[0];
+  const exParams = buildExampleParams(exTool);
 
   return `---
 name: ${skillName}
@@ -103,9 +121,9 @@ description: >
   Triggers on: ${serverName}, ${triggers}.
 ---
 
-# ${serverName} MCP Tools
+# How to call ${serverName} tools
 
-## Usage
+Use the CLI wrapper to call ${serverName} tools from the terminal.
 
 \`\`\`bash
 mcp-${serverName} <tool> [key=value ...]          # call tool
@@ -115,11 +133,17 @@ mcp-${serverName} --list                           # list available tools
 mcp-${serverName} --schema <tool>                  # show tool schema
 \`\`\`
 
-## Tools
+### Example
+
+\`\`\`bash
+mcp-${serverName} ${exTool.name} --params '${exParams}'
+\`\`\`
+
+## Available Tools
 
 ${buildToolTable(tools)}
 
-## Parameters
+## Parameter Reference
 
 ${buildParamSections(tools)}
 `;
