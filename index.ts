@@ -303,6 +303,14 @@ class McpConnectionPool {
     this.authErrors.delete(name);
   }
 
+  async markFailed(name: string, error: string): Promise<void> {
+    await this.disconnect(name);
+    if (isAuthError(error)) {
+      this.authErrors.add(name);
+    }
+    this.errors.set(name, error);
+  }
+
   availableServers(): string[] {
     return [...this.configs.keys()];
   }
@@ -751,7 +759,8 @@ const SlimMcpPlugin: Plugin = async (input) => {
   }
 
   // Connect + introspect + generate skills in one pass.
-  // Servers that fail connect or listTools → unregister → opencode handles.
+  // Servers that fail connect or listTools → marked failed but stay in pool
+  // for mcp-status visibility. Kept in cfg.mcp for native auth flow.
   const manifest: Manifest = {
     generatedAt: new Date().toISOString(),
     servers: {},
@@ -778,12 +787,14 @@ const SlimMcpPlugin: Plugin = async (input) => {
   for (let i = 0; i < results.length; i++) {
     if (results[i].status === "rejected") {
       const name = serverNames[i];
+      const reason = (results[i] as PromiseRejectedResult).reason;
+      const msg = String(reason?.message ?? reason);
       failedServers.add(name);
-      await pool.unregister(name);
+      await pool.markFailed(name, msg);
       if (pluginConfig.debugging) {
         console.error(
           `[slim-mcp] Failed to connect/introspect ${name}:`,
-          (results[i] as PromiseRejectedResult).reason,
+          reason,
         );
       }
     }
