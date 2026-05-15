@@ -7,6 +7,8 @@ import {
   readFileSync,
   writeFileSync,
   mkdirSync,
+  rmSync,
+  readdirSync,
 } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -702,6 +704,29 @@ function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
 }
 
+/** Remove legacy artifacts from ~/.config/opencode/ left by versions < 0.5.0. */
+function cleanupLegacyPaths(serverNames: string[]): void {
+  const legacyAiSkillsDir = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
+  const legacySkillsDir = join(DEFAULT_BASE_DIR, "skills");
+
+  // Remove old .ai-skills/slim-mcp/ directory (status.json, schemas, manifest)
+  if (existsSync(legacyAiSkillsDir)) {
+    try {
+      rmSync(legacyAiSkillsDir, { recursive: true, force: true });
+    } catch {}
+  }
+
+  // Remove old generated skills: ~/.config/opencode/skills/mcp-<server>/
+  for (const name of serverNames) {
+    const legacySkillDir = join(legacySkillsDir, `mcp-${name}`);
+    if (existsSync(legacySkillDir)) {
+      try {
+        rmSync(legacySkillDir, { recursive: true, force: true });
+      } catch {}
+    }
+  }
+}
+
 function writeSkill(serverName: string, content: string): void {
   const dir = join(GENERATED_SKILLS_DIR, `mcp-${serverName}`);
   ensureDir(dir);
@@ -775,6 +800,17 @@ const SlimMcpPlugin: Plugin = async (input) => {
   for (const [name, config] of Object.entries(slimEntries)) {
     if (config.enabled !== false) {
       pool.register(name, config);
+    }
+  }
+
+  // Clean up legacy paths from versions < 0.5.0
+  cleanupLegacyPaths(Object.keys(slimEntries));
+
+  // Wipe generated skills + schemas before regeneration — removes stale artifacts
+  // from servers no longer in config
+  for (const dir of [GENERATED_SKILLS_DIR, join(STATE_DIR, "schemas")]) {
+    if (existsSync(dir)) {
+      try { rmSync(dir, { recursive: true, force: true }); } catch {}
     }
   }
 
