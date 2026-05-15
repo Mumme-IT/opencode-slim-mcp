@@ -1,4 +1,3 @@
-/** @jsxImportSource @opentui/solid */
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@opencode-ai/plugin/tui"
 import { createSignal, createMemo, For, Match, Show, Switch, onMount, onCleanup } from "solid-js"
 
@@ -17,12 +16,17 @@ interface StatusFile {
 
 // ─── Status Reader (SDK → works local + remote) ─────────────────────────────
 
-const STATUS_PATH = "~/.config/opencode/.ai-skills/slim-mcp/status.json"
+const STATUS_REL_PATH = "slim-mcp/status.json"
 
 async function readStatusViaSDK(api: TuiPluginApi): Promise<SlimMcpServer[]> {
   try {
-    const result = await api.client.file.read({ query: { path: STATUS_PATH } })
-    const content = (result as any)?.data?.content ?? (result as any)?.content
+    const stateDir = (api.state as any).path?.state
+    if (!stateDir) return []
+    const result = await (api.client.file as any).read({
+      path: STATUS_REL_PATH,
+      directory: stateDir,
+    })
+    const content = result?.data?.content
     if (!content || typeof content !== "string") return []
     const data: StatusFile = JSON.parse(content)
     return data.servers ?? []
@@ -78,54 +82,55 @@ function View(props: { api: TuiPluginApi }) {
   })
 
   return (
-    <Show when={servers().length > 0}>
-      <box>
-        <box flexDirection="row" gap={1} onMouseDown={() => servers().length > 2 && setOpen((x) => !x)}>
-          <Show when={servers().length > 2}>
-            <text fg={theme().text}>{open() ? "▼" : "▶"}</text>
-          </Show>
-          <text fg={theme().text}>
-            <b>Slim MCP</b>
-            <Show when={!open()}>
-              <span style={{ fg: theme().textMuted }}>
-                {" "}
-                ({on()} active{bad() > 0 ? `, ${bad()} error${bad() > 1 ? "s" : ""}` : ""})
-              </span>
-            </Show>
-          </text>
-        </box>
-        <Show when={servers().length <= 2 || open()}>
-          <For each={servers()}>
-            {(item) => (
-              <box flexDirection="row" gap={1}>
-                <text
-                  flexShrink={0}
-                  style={{
-                    fg: dot(item.status),
-                  }}
-                >
-                  •
-                </text>
-                <text fg={theme().text} wrapMode="word">
-                  {item.name}{" "}
-                  <span style={{ fg: theme().textMuted }}>
-                    <Switch fallback={item.status}>
-                      <Match when={item.status === "connected"}>Connected</Match>
-                      <Match when={item.status === "error"}>
-                        <i>{item.error || "Error"}</i>
-                      </Match>
-                      <Match when={item.status === "disabled"}>Disabled</Match>
-                      <Match when={item.status === "needs_auth"}>Needs auth</Match>
-                      <Match when={item.status === "pending"}>Pending</Match>
-                    </Switch>
-                  </span>
-                </text>
-              </box>
-            )}
-          </For>
+    <box>
+      <box flexDirection="row" gap={1} onMouseDown={() => servers().length > 2 && setOpen((x) => !x)}>
+        <Show when={servers().length > 2}>
+          <text fg={theme().text}>{open() ? "▼" : "▶"}</text>
         </Show>
+        <text fg={theme().text}>
+          <b>Slim MCP</b>
+          <Show when={!open() && servers().length > 0}>
+            <span style={{ fg: theme().textMuted }}>
+              {" "}
+              ({on()} active{bad() > 0 ? `, ${bad()} error${bad() > 1 ? "s" : ""}` : ""})
+            </span>
+          </Show>
+        </text>
       </box>
-    </Show>
+      <Show when={servers().length === 0}>
+        <text fg={theme().textMuted}>No slim MCPs available</text>
+      </Show>
+      <Show when={servers().length > 0 && (servers().length <= 2 || open())}>
+        <For each={servers()}>
+          {(item) => (
+            <box flexDirection="row" gap={1}>
+              <text
+                flexShrink={0}
+                style={{
+                  fg: dot(item.status),
+                }}
+              >
+                •
+              </text>
+              <text fg={theme().text} wrapMode="word">
+                {item.name}{" "}
+                <span style={{ fg: theme().textMuted }}>
+                  <Switch fallback={item.status}>
+                    <Match when={item.status === "connected"}>Connected</Match>
+                    <Match when={item.status === "error"}>
+                      <i>{item.error || "Error"}</i>
+                    </Match>
+                    <Match when={item.status === "disabled"}>Disabled</Match>
+                    <Match when={item.status === "needs_auth"}>Needs auth</Match>
+                    <Match when={item.status === "pending"}>Pending</Match>
+                  </Switch>
+                </span>
+              </text>
+            </box>
+          )}
+        </For>
+      </Show>
+    </box>
   )
 }
 

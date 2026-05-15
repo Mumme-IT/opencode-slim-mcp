@@ -20,9 +20,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
 
 const DEFAULT_BASE_DIR = join(homedir(), ".config", "opencode");
-const DEFAULT_SKILLS_DIR = join(DEFAULT_BASE_DIR, "skills");
-const AI_SKILLS_DIR = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
-const MCP_STATUS_FILE = join(AI_SKILLS_DIR, "status.json");
+const STATE_DIR = join(homedir(), ".local", "state", "opencode", "slim-mcp");
+const GENERATED_SKILLS_DIR = join(STATE_DIR, "skills");
+const MCP_STATUS_FILE = join(STATE_DIR, "status.json");
 const MCP_AUTH_FILE = join(homedir(), ".local", "share", "opencode", "mcp-auth.json");
 
 // ─── Stored MCP Auth Provider ────────────────────────────────────────────────
@@ -703,13 +703,13 @@ function ensureDir(dir: string): void {
 }
 
 function writeSkill(serverName: string, content: string): void {
-  const dir = join(DEFAULT_SKILLS_DIR, `mcp-${serverName}`);
+  const dir = join(GENERATED_SKILLS_DIR, `mcp-${serverName}`);
   ensureDir(dir);
   writeFileSync(join(dir, "SKILL.md"), content, "utf8");
 }
 
 function writeSchemas(serverName: string, tools: ToolInfo[]): void {
-  const schemaDir = join(AI_SKILLS_DIR, "schemas", serverName);
+  const schemaDir = join(STATE_DIR, "schemas", serverName);
   ensureDir(schemaDir);
   for (const t of tools) {
     writeFileSync(
@@ -733,7 +733,7 @@ interface Manifest {
 }
 
 function loadManifest(): Manifest | null {
-  const manifestPath = join(AI_SKILLS_DIR, "manifest.json");
+  const manifestPath = join(STATE_DIR, "manifest.json");
   if (!existsSync(manifestPath)) return null;
   try {
     return JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -743,9 +743,9 @@ function loadManifest(): Manifest | null {
 }
 
 function saveManifest(manifest: Manifest): void {
-  ensureDir(AI_SKILLS_DIR);
+  ensureDir(STATE_DIR);
   writeFileSync(
-    join(AI_SKILLS_DIR, "manifest.json"),
+    join(STATE_DIR, "manifest.json"),
     JSON.stringify(manifest, null, 2),
     "utf8"
   );
@@ -839,8 +839,8 @@ const SlimMcpPlugin: Plugin = async (input) => {
       cfg.skills = cfg.skills || {};
       cfg.skills.paths = cfg.skills.paths || [];
 
-      if (!cfg.skills.paths.includes(DEFAULT_SKILLS_DIR)) {
-        cfg.skills.paths.push(DEFAULT_SKILLS_DIR);
+      if (!cfg.skills.paths.includes(GENERATED_SKILLS_DIR)) {
+        cfg.skills.paths.push(GENERATED_SKILLS_DIR);
       }
       if (!cfg.skills.paths.includes(SKILLS_DIR)) {
         cfg.skills.paths.push(SKILLS_DIR);

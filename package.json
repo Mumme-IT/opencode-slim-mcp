@@ -35,7 +35,7 @@
   "scripts": {
     "build": "bun run build:server && bun run build:tui",
     "build:server": "bun build index.ts --outdir dist --target node --entry-naming \"server.[ext]\" --external @opencode-ai/plugin --external @opencode-ai/sdk --external @modelcontextprotocol/sdk",
-    "build:tui": "NODE_ENV=production bun build tui.tsx --outdir dist --target node --entry-naming \"tui.[ext]\" --external @opencode-ai/plugin --external @opentui/core --external @opentui/solid --external solid-js",
+    "build:tui": "bun run build-tui.ts",
     "postbuild": "mkdir -p .opencode/plugins && cp dist/server.js .opencode/plugins/slim-mcp.js",
     "prepublishOnly": "bun run build",
     "generate": "node generate.js",
