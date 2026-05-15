@@ -336,24 +336,6 @@ class McpConnectionPool {
     this.errors.set(name, error);
   }
 
-  async connectAll(): Promise<void> {
-    const names = this.enabledServers();
-    const results = await Promise.allSettled(
-      names.map((n) => this.getClient(n))
-    );
-
-    for (let i = 0; i < results.length; i++) {
-      if (results[i].status === "rejected") {
-        const reason = (results[i] as PromiseRejectedResult).reason;
-        const msg = String(reason?.message ?? reason);
-        this.errors.set(names[i], msg);
-        if (this.debugging) {
-          console.error(`[slim-mcp] Failed to connect ${names[i]}:`, reason);
-        }
-      }
-    }
-  }
-
   async getClient(name: string): Promise<Client> {
     const config = this.configs.get(name);
     if (!config) throw new Error(`Unknown MCP server: ${name}`);
@@ -448,51 +430,6 @@ class McpConnectionPool {
     } catch {
       // Server may already be gone
     }
-  }
-}
-
-// ─── Introspection ───────────────────────────────────────────────────────────
-
-async function introspectServer(name: string, config: SlimMcpConfig): Promise<ToolInfo[]> {
-  let transport;
-
-  if (config.type === "remote") {
-    const url = new URL(config.url!);
-    const storedAuth = loadMcpAuth(name);
-    const authProvider = storedAuth
-      ? new StoredOAuthClientProvider(name, storedAuth)
-      : undefined;
-    transport = new StreamableHTTPClientTransport(url, {
-      authProvider,
-      requestInit: config.headers
-        ? { headers: config.headers }
-        : undefined,
-    });
-  } else {
-    const [command, ...args] = config.command!;
-    const env = config.environment
-      ? { ...process.env, ...config.environment }
-      : undefined;
-    transport = new StdioClientTransport({
-      command,
-      args,
-      env,
-      stderr: "pipe",
-    });
-  }
-
-  const client = new Client({ name: "slim-mcp-introspect", version: "1.0.0" });
-
-  try {
-    await client.connect(transport);
-    const { tools } = await client.listTools();
-    await client.close();
-    return tools as ToolInfo[];
-  } catch {
-    try {
-      await client.close();
-    } catch {}
-    return [];
   }
 }
 
@@ -757,15 +694,12 @@ function writeSchemas(serverName: string, tools: ToolInfo[]): void {
 
 // ─── Manifest ────────────────────────────────────────────────────────────────
 
-const MANIFEST_VERSION = 4;
-
 interface ManifestServerEntry {
   toolCount: number;
   tools: { name: string; description: string }[];
 }
 
 interface Manifest {
-  version?: number;
   generatedAt: string;
   servers: Record<string, ManifestServerEntry>;
 }
@@ -787,64 +721,6 @@ function saveManifest(manifest: Manifest): void {
     JSON.stringify(manifest, null, 2),
     "utf8"
   );
-}
-
-function needsRegeneration(servers: Record<string, SlimMcpConfig>): boolean {
-  const manifest = loadManifest();
-  if (!manifest) return true;
-  if ((manifest.version ?? 0) < MANIFEST_VERSION) return true;
-
-  const enabledServers = Object.entries(servers)
-    .filter(([, cfg]) => cfg.enabled !== false)
-    .map(([name]) => name);
-  const manifestKeys = Object.keys(manifest.servers).sort().join(",");
-  const currentKeys = enabledServers.sort().join(",");
-  return manifestKeys !== currentKeys;
-}
-
-// ─── Generation Orchestrator ─────────────────────────────────────────────────
-
-async function generateAll(
-  servers: Record<string, SlimMcpConfig>,
-  pool: McpConnectionPool,
-  debugging: boolean,
-): Promise<void> {
-  const manifest: Manifest = {
-    version: MANIFEST_VERSION,
-    generatedAt: new Date().toISOString(),
-    servers: {},
-  };
-
-  const entries = Object.entries(servers).filter(
-    ([, cfg]) => cfg.enabled !== false
-  );
-  const results = await Promise.allSettled(
-    entries.map(async ([serverName, config]) => {
-      const tools = await introspectServer(serverName, config);
-      if (tools.length === 0) return;
-
-      writeSkill(serverName, generateSkillMd(serverName, tools));
-      writeSchemas(serverName, tools);
-      manifest.servers[serverName] = {
-        toolCount: tools.length,
-        tools: tools.map((t) => ({ name: t.name, description: firstLine(t.description) })),
-      };
-    })
-  );
-
-  for (let i = 0; i < results.length; i++) {
-    if (results[i].status === "rejected") {
-      const name = entries[i][0];
-      if (debugging) {
-        console.error(
-          `[slim-mcp] Failed to introspect ${name}:`,
-          (results[i] as PromiseRejectedResult).reason
-        );
-      }
-    }
-  }
-
-  saveManifest(manifest);
 }
 
 // ─── Plugin ──────────────────────────────────────────────────────────────────
@@ -874,23 +750,46 @@ const SlimMcpPlugin: Plugin = async (input) => {
     }
   }
 
-  // Regenerate skills if needed
-  if (needsRegeneration(slimEntries)) {
-    await generateAll(slimEntries, pool, pluginConfig.debugging);
-  }
-
-  // Connect all servers — this IS the probe.
-  // Servers that fail to connect get unregistered → opencode handles them.
-  await pool.connectAll();
-
+  // Connect + introspect + generate skills in one pass.
+  // Servers that fail connect or listTools → unregister → opencode handles.
+  const manifest: Manifest = {
+    generatedAt: new Date().toISOString(),
+    servers: {},
+  };
   const failedServers = new Set<string>();
-  for (const name of pool.enabledServers()) {
-    const state = pool.serverState(name);
-    if (state !== "connected") {
+  const serverNames = pool.enabledServers();
+
+  const results = await Promise.allSettled(
+    serverNames.map(async (name) => {
+      const client = await pool.getClient(name);
+      const { tools } = await client.listTools();
+      if (tools.length === 0) return;
+
+      const toolInfos = tools as ToolInfo[];
+      writeSkill(name, generateSkillMd(name, toolInfos));
+      writeSchemas(name, toolInfos);
+      manifest.servers[name] = {
+        toolCount: toolInfos.length,
+        tools: toolInfos.map((t) => ({ name: t.name, description: firstLine(t.description) })),
+      };
+    })
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    if (results[i].status === "rejected") {
+      const name = serverNames[i];
       failedServers.add(name);
       await pool.unregister(name);
+      if (pluginConfig.debugging) {
+        console.error(
+          `[slim-mcp] Failed to connect/introspect ${name}:`,
+          (results[i] as PromiseRejectedResult).reason,
+        );
+      }
     }
   }
+
+  saveManifest(manifest);
 
   return {
     config: async (cfg: any) => {
