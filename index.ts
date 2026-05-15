@@ -22,6 +22,7 @@ const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
 const DEFAULT_BASE_DIR = join(homedir(), ".config", "opencode");
 const DEFAULT_SKILLS_DIR = join(DEFAULT_BASE_DIR, "skills");
 const AI_SKILLS_DIR = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
+const MCP_STATUS_FILE = join(AI_SKILLS_DIR, "status.json");
 const MCP_AUTH_FILE = join(homedir(), ".local", "share", "opencode", "mcp-auth.json");
 
 // ─── Stored MCP Auth Provider ────────────────────────────────────────────────
@@ -309,6 +310,7 @@ class McpConnectionPool {
       this.authErrors.add(name);
     }
     this.errors.set(name, error);
+    this.writeStatus();
   }
 
   availableServers(): string[] {
@@ -342,6 +344,22 @@ class McpConnectionPool {
   markNeedsAuth(name: string, error: string): void {
     this.authErrors.add(name);
     this.errors.set(name, error);
+    this.writeStatus();
+  }
+
+  /** Write current pool state to disk for TUI plugin consumption. */
+  writeStatus(): void {
+    const servers = this.availableServers().map((name) => ({
+      name,
+      status: this.serverState(name),
+      error: this.serverError(name) || undefined,
+    }));
+    try {
+      ensureDir(path.dirname(MCP_STATUS_FILE));
+      writeFileSync(MCP_STATUS_FILE, JSON.stringify({ servers, updatedAt: Date.now() }), "utf8");
+    } catch {
+      // Best-effort — TUI will show stale data
+    }
   }
 
   async getClient(name: string): Promise<Client> {
@@ -416,6 +434,7 @@ class McpConnectionPool {
         : null;
 
     this.connections.set(name, { client, lastUsed: Date.now(), timer });
+    this.writeStatus();
     return client;
   }
 
@@ -438,6 +457,7 @@ class McpConnectionPool {
     } catch {
       // Server may already be gone
     }
+    this.writeStatus();
   }
 }
 
@@ -801,6 +821,7 @@ const SlimMcpPlugin: Plugin = async (input) => {
   }
 
   saveManifest(manifest);
+  pool.writeStatus();
 
   return {
     config: async (cfg: any) => {

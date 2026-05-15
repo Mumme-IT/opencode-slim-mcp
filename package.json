@@ -1,34 +1,62 @@
 {
   "name": "opencode-slim-mcp",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "OpenCode plugin — convert MCP servers with slim:true into skills + native proxy tools with connection pooling",
-  "keywords": ["opencode", "plugin", "mcp", "skills"],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "mcp",
+    "skills"
+  ],
   "license": "MIT",
   "author": "Mumme-IT",
   "type": "module",
-  "main": ".opencode/plugins/slim-mcp.js",
+  "main": "./dist/server.js",
   "exports": {
     ".": {
-      "import": "./.opencode/plugins/slim-mcp.js"
+      "import": "./dist/server.js"
+    },
+    "./server": {
+      "import": "./dist/server.js"
+    },
+    "./tui": {
+      "import": "./dist/tui.js"
     }
   },
   "bin": {
     "slim-mcp-generate": "./generate.js"
   },
   "files": [
-    ".opencode",
+    "dist",
     "generate.js",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun build index.ts --outdir .opencode/plugins --target node --entry-naming \"slim-mcp.[ext]\" --external @opencode-ai/plugin --external @opencode-ai/sdk --external @modelcontextprotocol/sdk",
+    "build": "bun run build:server && bun run build:tui",
+    "build:server": "bun build index.ts --outdir dist --target node --entry-naming \"server.[ext]\" --external @opencode-ai/plugin --external @opencode-ai/sdk --external @modelcontextprotocol/sdk",
+    "build:tui": "NODE_ENV=production bun build tui.tsx --outdir dist --target node --entry-naming \"tui.[ext]\" --external @opencode-ai/plugin --external @opentui/core --external @opentui/solid --external solid-js",
+    "postbuild": "mkdir -p .opencode/plugins && cp dist/server.js .opencode/plugins/slim-mcp.js",
     "prepublishOnly": "bun run build",
     "generate": "node generate.js",
     "refresh": "node generate.js"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": ">=1.0.0",
+    "@opentui/core": ">=0.2.6",
+    "@opentui/solid": ">=0.2.6",
+    "solid-js": "*"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.4.6",
