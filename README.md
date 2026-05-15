@@ -108,11 +108,27 @@ Shows status of all slim MCP servers: `connected`, `pending`, `disabled`, or `er
 ## Output Structure
 
 ```
-~/.config/opencode/.ai-skills/slim-mcp/
+~/.local/state/opencode/slim-mcp/
 ├── skills/mcp-<server>/SKILL.md     # Tool names, descriptions, param docs
 ├── schemas/<server>/*.json           # Per-tool input schemas
-└── manifest.json                     # Generation metadata
+├── manifest.json                     # Generation metadata
+└── status.json                       # Server status (consumed by TUI plugin)
 ```
+
+## TUI Sidebar Plugin
+
+Shows slim MCP server status in the opencode TUI sidebar (connection state, errors, auth status).
+
+Add to your global TUI config at `~/.config/opencode/tui.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/tui.json",
+  "plugin": ["opencode-slim-mcp"]
+}
+```
+
+Renders below the built-in MCP sidebar (order 210). Polls `status.json` on startup + after `mcp`/`mcp-status` tool calls.
 
 ## Prerequisites
 
