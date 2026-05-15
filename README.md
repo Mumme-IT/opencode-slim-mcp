@@ -70,7 +70,8 @@ Disabled servers appear as `[disabled]` in `mcp-status` but won't start, generat
 3. Introspects each server for available tools
 4. Generates `SKILL.md` files + schema cache per server
 5. Registers a single `mcp` tool that proxies calls to any slim server
-6. Sets `enabled: false` on slim entries in host config (prevents double-handling)
+6. Probes remote reachability first; auth failures stay enabled for `opencode mcp auth`
+7. Sets `enabled: false` on remaining slim entries in host config (prevents double-handling)
 
 Regeneration only triggers when the enabled server list changes.
 

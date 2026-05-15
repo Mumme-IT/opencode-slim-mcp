@@ -47,9 +47,39 @@ function loadMcpAuth(serverName: string): StoredMcpAuth | undefined {
   }
 }
 
-function hasValidMcpAuth(serverName: string): boolean {
-  const auth = loadMcpAuth(serverName);
-  return !!(auth?.tokens?.accessToken);
+async function probeRemoteServer(
+  serverName: string,
+  config: SlimMcpConfig,
+): Promise<RemoteServerProbeResult> {
+  const url = new URL(config.url!);
+  const storedAuth = loadMcpAuth(serverName);
+  const authProvider = storedAuth
+    ? new StoredOAuthClientProvider(serverName, storedAuth)
+    : undefined;
+  const transport = new StreamableHTTPClientTransport(url, {
+    authProvider,
+    requestInit: config.headers
+      ? { headers: config.headers }
+      : undefined,
+  });
+  const client = new Client({ name: "slim-mcp-probe", version: "1.0.0" });
+
+  try {
+    await client.connect(transport);
+    await client.close();
+    return "reachable";
+  } catch (err: any) {
+    const message = String(err?.message ?? err);
+    try {
+      await client.close();
+    } catch {}
+
+    if (isAuthError(message)) {
+      return "needs_auth";
+    }
+
+    return "unreachable";
+  }
 }
 
 class StoredOAuthClientProvider implements OAuthClientProvider {
@@ -123,6 +153,8 @@ interface SlimPluginConfig {
   idleShutdownMs: number;
   debugging: boolean;
 }
+
+type RemoteServerProbeResult = "reachable" | "needs_auth" | "unreachable";
 
 interface ToolInfo {
   name: string;
@@ -851,6 +883,44 @@ async function generateAll(
   saveManifest(manifest);
 }
 
+async function decideRemoteServerHandling(
+  servers: Record<string, SlimMcpConfig>,
+  debugging: boolean,
+): Promise<Map<string, boolean>> {
+  const decisions = new Map<string, boolean>();
+
+  const remoteEntries = Object.entries(servers).filter(
+    ([, config]) => config.enabled !== false && config.type === "remote"
+  );
+
+  const results = await Promise.allSettled(
+    remoteEntries.map(async ([name, config]) => ({
+      name,
+      result: await probeRemoteServer(name, config),
+    }))
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    const [name] = remoteEntries[i];
+    const outcome = results[i];
+
+    if (outcome.status === "fulfilled") {
+      decisions.set(name, outcome.value.result !== "needs_auth");
+      continue;
+    }
+
+    if (debugging) {
+      console.error(
+        `[slim-mcp] Failed to probe ${name}:`,
+        outcome.reason,
+      );
+    }
+    decisions.set(name, true);
+  }
+
+  return decisions;
+}
+
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
 const SlimMcpPlugin: Plugin = async (input) => {
@@ -858,6 +928,10 @@ const SlimMcpPlugin: Plugin = async (input) => {
   const pluginConfig = loadPluginConfig(projectDir);
   const slimEntries = extractSlimMcpEntries(projectDir);
   const pool = new McpConnectionPool(pluginConfig);
+  const remoteHandling = await decideRemoteServerHandling(
+    slimEntries,
+    pluginConfig.debugging,
+  );
 
   if (Object.keys(slimEntries).length === 0) {
     return {
@@ -915,12 +989,11 @@ const SlimMcpPlugin: Plugin = async (input) => {
         for (const name of slimNames) {
           if (!cfg.mcp[name]) continue;
           if (slimEntries[name].type === "remote") {
-            if (hasValidMcpAuth(name)) {
-              // Has valid token → disable so core won't spawn, plugin handles.
+            if (remoteHandling.get(name)) {
+              // Reachable or non-auth failure → plugin handles remote server.
               cfg.mcp[name].enabled = false;
             }
-            // No valid token → keep entry enabled so `opencode mcp auth`
-            // works without "Unexpected status: disabled" warning.
+            // Auth failure → keep entry enabled so `opencode mcp auth` works.
           } else {
             // Delete local (stdio) entries to prevent double-process spawn.
             delete cfg.mcp[name];
