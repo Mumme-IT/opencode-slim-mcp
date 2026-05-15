@@ -47,40 +47,6 @@ function loadMcpAuth(serverName: string): StoredMcpAuth | undefined {
   }
 }
 
-async function probeRemoteServer(
-  serverName: string,
-  config: SlimMcpConfig,
-): Promise<RemoteServerProbeResult> {
-  const url = new URL(config.url!);
-  const storedAuth = loadMcpAuth(serverName);
-  const authProvider = storedAuth
-    ? new StoredOAuthClientProvider(serverName, storedAuth)
-    : undefined;
-  const transport = new StreamableHTTPClientTransport(url, {
-    authProvider,
-    requestInit: config.headers
-      ? { headers: config.headers }
-      : undefined,
-  });
-  const client = new Client({ name: "slim-mcp-probe", version: "1.0.0" });
-
-  try {
-    await client.connect(transport);
-    await client.close();
-    return "reachable";
-  } catch (err: any) {
-    const message = String(err?.message ?? err);
-    try {
-      await client.close();
-    } catch {}
-
-    if (isAuthError(message)) {
-      return "needs_auth";
-    }
-
-    return "unreachable";
-  }
-}
 
 class StoredOAuthClientProvider implements OAuthClientProvider {
   private stored: StoredMcpAuth;
@@ -154,8 +120,6 @@ interface SlimPluginConfig {
   debugging: boolean;
 }
 
-type RemoteServerProbeResult = "reachable" | "needs_auth" | "unreachable";
-
 interface ToolInfo {
   name: string;
   description?: string;
@@ -216,7 +180,7 @@ function loadPluginConfig(projectDir: string): SlimPluginConfig {
     try {
       const raw = JSON.parse(readFileSync(candidate, "utf8"));
       return {
-        lazyLoading: raw["lazy-loading"] !== false,
+        lazyLoading: raw["lazy-loading"] === true,
         idleShutdownMs: raw["lazy-idle-shutdown-interval"]
           ? parseIntervalMs(String(raw["lazy-idle-shutdown-interval"]))
           : DEFAULT_IDLE_MS,
@@ -227,7 +191,7 @@ function loadPluginConfig(projectDir: string): SlimPluginConfig {
     }
   }
 
-  return { lazyLoading: true, idleShutdownMs: DEFAULT_IDLE_MS, debugging: false };
+  return { lazyLoading: false, idleShutdownMs: DEFAULT_IDLE_MS, debugging: false };
 }
 
 // ─── MCP Config Discovery ────────────────────────────────────────────────────
@@ -322,8 +286,6 @@ class McpConnectionPool {
   private idleShutdownMs: number;
   private lazy: boolean;
   private debugging: boolean;
-  onAuthError?: (name: string) => void;
-
   constructor(pluginConfig: SlimPluginConfig) {
     this.idleShutdownMs = pluginConfig.idleShutdownMs;
     this.lazy = pluginConfig.lazyLoading;
@@ -332,6 +294,13 @@ class McpConnectionPool {
 
   register(name: string, config: SlimMcpConfig): void {
     this.configs.set(name, config);
+  }
+
+  async unregister(name: string): Promise<void> {
+    await this.disconnect(name);
+    this.configs.delete(name);
+    this.errors.delete(name);
+    this.authErrors.delete(name);
   }
 
   availableServers(): string[] {
@@ -363,10 +332,8 @@ class McpConnectionPool {
   }
 
   markNeedsAuth(name: string, error: string): void {
-    const isNew = !this.authErrors.has(name);
     this.authErrors.add(name);
     this.errors.set(name, error);
-    if (isNew) this.onAuthError?.(name);
   }
 
   async connectAll(): Promise<void> {
@@ -447,9 +414,7 @@ class McpConnectionPool {
     } catch (err: any) {
       const msg = String(err?.message ?? err);
       if (isAuthError(msg)) {
-        const isNew = !this.authErrors.has(name);
         this.authErrors.add(name);
-        if (isNew) this.onAuthError?.(name);
       }
       this.errors.set(name, msg);
       throw err;
@@ -855,7 +820,6 @@ async function generateAll(
   );
   const results = await Promise.allSettled(
     entries.map(async ([serverName, config]) => {
-      pool.register(serverName, config);
       const tools = await introspectServer(serverName, config);
       if (tools.length === 0) return;
 
@@ -883,44 +847,6 @@ async function generateAll(
   saveManifest(manifest);
 }
 
-async function decideRemoteServerHandling(
-  servers: Record<string, SlimMcpConfig>,
-  debugging: boolean,
-): Promise<Map<string, boolean>> {
-  const decisions = new Map<string, boolean>();
-
-  const remoteEntries = Object.entries(servers).filter(
-    ([, config]) => config.enabled !== false && config.type === "remote"
-  );
-
-  const results = await Promise.allSettled(
-    remoteEntries.map(async ([name, config]) => ({
-      name,
-      result: await probeRemoteServer(name, config),
-    }))
-  );
-
-  for (let i = 0; i < results.length; i++) {
-    const [name] = remoteEntries[i];
-    const outcome = results[i];
-
-    if (outcome.status === "fulfilled") {
-      decisions.set(name, outcome.value.result !== "needs_auth");
-      continue;
-    }
-
-    if (debugging) {
-      console.error(
-        `[slim-mcp] Failed to probe ${name}:`,
-        outcome.reason,
-      );
-    }
-    decisions.set(name, true);
-  }
-
-  return decisions;
-}
-
 // ─── Plugin ──────────────────────────────────────────────────────────────────
 
 const SlimMcpPlugin: Plugin = async (input) => {
@@ -928,10 +854,6 @@ const SlimMcpPlugin: Plugin = async (input) => {
   const pluginConfig = loadPluginConfig(projectDir);
   const slimEntries = extractSlimMcpEntries(projectDir);
   const pool = new McpConnectionPool(pluginConfig);
-  const remoteHandling = await decideRemoteServerHandling(
-    slimEntries,
-    pluginConfig.debugging,
-  );
 
   if (Object.keys(slimEntries).length === 0) {
     return {
@@ -945,9 +867,11 @@ const SlimMcpPlugin: Plugin = async (input) => {
     };
   }
 
-  // Register all servers in pool
+  // Register all enabled servers in pool
   for (const [name, config] of Object.entries(slimEntries)) {
-    pool.register(name, config);
+    if (config.enabled !== false) {
+      pool.register(name, config);
+    }
   }
 
   // Regenerate skills if needed
@@ -955,49 +879,29 @@ const SlimMcpPlugin: Plugin = async (input) => {
     await generateAll(slimEntries, pool, pluginConfig.debugging);
   }
 
-  // Eager connect if lazy-loading is disabled
-  if (!pluginConfig.lazyLoading) {
-    await pool.connectAll();
-  }
+  // Connect all servers — this IS the probe.
+  // Servers that fail to connect get unregistered → opencode handles them.
+  await pool.connectAll();
 
-  // Show TUI toast when auth errors are detected (startup or lazy connect)
-  pool.onAuthError = (name) => {
-    input.client.tui.showToast({
-      body: {
-        title: `MCP: ${name}`,
-        message: `Needs authentication. Run: opencode mcp auth ${name}`,
-        variant: "warning",
-        duration: 30_000,
-      },
-    }).catch(() => {
-      // TUI may not be ready yet during startup; ignore
-    });
-  };
-
-  // Fire toasts for any auth errors detected during eager connect
-  for (const name of pool.serversNeedingAuth()) {
-    // Delay so TUI has time to initialize
-    setTimeout(() => pool.onAuthError?.(name), 2_000);
+  const failedServers = new Set<string>();
+  for (const name of pool.enabledServers()) {
+    const state = pool.serverState(name);
+    if (state !== "connected") {
+      failedServers.add(name);
+      await pool.unregister(name);
+    }
   }
 
   return {
     config: async (cfg: any) => {
       if (cfg.mcp) {
-        const slimNames = new Set(Object.keys(slimEntries).filter(
+        const slimNames = Object.keys(slimEntries).filter(
           (name) => slimEntries[name].enabled !== false
-        ));
+        );
         for (const name of slimNames) {
           if (!cfg.mcp[name]) continue;
-          if (slimEntries[name].type === "remote") {
-            if (remoteHandling.get(name)) {
-              // Reachable or non-auth failure → plugin handles remote server.
-              cfg.mcp[name].enabled = false;
-            }
-            // Auth failure → keep entry enabled so `opencode mcp auth` works.
-          } else {
-            // Delete local (stdio) entries to prevent double-process spawn.
-            delete cfg.mcp[name];
-          }
+          if (failedServers.has(name)) continue; // opencode handles
+          delete cfg.mcp[name]; // plugin handles
         }
       }
 
