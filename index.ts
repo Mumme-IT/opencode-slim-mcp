@@ -2,6 +2,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { fileURLToPath } from "url";
 import path from "path";
+import { cleanCfgMcp, extractCfgMcpEntries } from "./config-utils";
 import {
   existsSync,
   readFileSync,
@@ -271,66 +272,6 @@ function extractSlimMcpEntries(
   }
 
   return slimEntries;
-}
-
-function extractCfgMcpEntries(
-  cfg: any,
-  alreadyKnown: Set<string>,
-): Record<string, SlimMcpConfig> {
-  const entries: Record<string, SlimMcpConfig> = {};
-  const mcp = cfg?.mcp;
-  if (!mcp) return entries;
-
-  for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
-    if (alreadyKnown.has(name)) continue;
-    if (entry?.slim !== true || !isSupportedMcp(entry)) continue;
-
-    if (inferType(entry) === "remote") {
-      if (!entry.url) continue;
-      entries[name] = {
-        type: "remote",
-        url: entry.url,
-        headers: entry.headers,
-        slim: true,
-        enabled: entry.enabled,
-        timeout: entry.timeout,
-      };
-    } else {
-      const command = normalizeCommand(entry);
-      if (!command) continue;
-      entries[name] = {
-        type: "local",
-        command,
-        environment: entry.environment,
-        slim: true,
-        enabled: entry.enabled,
-        timeout: entry.timeout,
-      };
-    }
-  }
-
-  return entries;
-}
-
-function cleanCfgMcp(
-  cfg: any,
-  allSlimNames: Set<string>,
-  failedServers: Set<string>,
-): void {
-  const mcp = cfg?.mcp;
-  if (!mcp) return;
-
-  for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
-    if (allSlimNames.has(name)) {
-      if (failedServers.has(name)) {
-        delete entry.slim;
-      } else {
-        delete mcp[name];
-      }
-    } else if (entry?.slim === true) {
-      delete entry.slim;
-    }
-  }
 }
 
 // ─── MCP Connection Pool ─────────────────────────────────────────────────────
@@ -1001,4 +942,4 @@ const SlimMcpPlugin: Plugin = async (input) => {
   };
 };
 
-export { SlimMcpPlugin, extractCfgMcpEntries, cleanCfgMcp };
+export { SlimMcpPlugin };

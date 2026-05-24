@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { extractCfgMcpEntries, cleanCfgMcp } from "./index.ts";
+import { extractCfgMcpEntries, cleanCfgMcp } from "./config-utils.ts";
 
 // ─── extractCfgMcpEntries ────────────────────────────────────────────────────
 
