@@ -1,6 +1,6 @@
 {
   "name": "opencode-slim-mcp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "OpenCode plugin — convert MCP servers with slim:true into skills + native proxy tools with connection pooling",
   "keywords": [
     "opencode",
@@ -38,6 +38,7 @@
     "build:tui": "bun run build-tui.ts",
     "postbuild": "mkdir -p .opencode/plugins && cp dist/server.js .opencode/plugins/slim-mcp.js",
     "prepublishOnly": "bun run build",
+    "test": "bun test",
     "generate": "node generate.js",
     "refresh": "node generate.js"
   },

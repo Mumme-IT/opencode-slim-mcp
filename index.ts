@@ -273,6 +273,66 @@ function extractSlimMcpEntries(
   return slimEntries;
 }
 
+function extractCfgMcpEntries(
+  cfg: any,
+  alreadyKnown: Set<string>,
+): Record<string, SlimMcpConfig> {
+  const entries: Record<string, SlimMcpConfig> = {};
+  const mcp = cfg?.mcp;
+  if (!mcp) return entries;
+
+  for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
+    if (alreadyKnown.has(name)) continue;
+    if (entry?.slim !== true || !isSupportedMcp(entry)) continue;
+
+    if (inferType(entry) === "remote") {
+      if (!entry.url) continue;
+      entries[name] = {
+        type: "remote",
+        url: entry.url,
+        headers: entry.headers,
+        slim: true,
+        enabled: entry.enabled,
+        timeout: entry.timeout,
+      };
+    } else {
+      const command = normalizeCommand(entry);
+      if (!command) continue;
+      entries[name] = {
+        type: "local",
+        command,
+        environment: entry.environment,
+        slim: true,
+        enabled: entry.enabled,
+        timeout: entry.timeout,
+      };
+    }
+  }
+
+  return entries;
+}
+
+function cleanCfgMcp(
+  cfg: any,
+  allSlimNames: Set<string>,
+  failedServers: Set<string>,
+): void {
+  const mcp = cfg?.mcp;
+  if (!mcp) return;
+
+  for (const [name, entry] of Object.entries(mcp) as [string, any][]) {
+    if (allSlimNames.has(name)) {
+      if (failedServers.has(name)) {
+        delete entry.slim;
+      } else {
+        delete mcp[name];
+      }
+    } else if (entry?.slim === true) {
+      delete entry.slim;
+    }
+  }
+}
+
 // ─── MCP Connection Pool ─────────────────────────────────────────────────────
 
 interface PooledConnection {
@@ -776,56 +836,17 @@ function saveManifest(manifest: Manifest): void {
   );
 }
 
-// ─── Plugin ──────────────────────────────────────────────────────────────────
+// ─── Server Processing ───────────────────────────────────────────────────────
 
-const SlimMcpPlugin: Plugin = async (input) => {
-  const projectDir = input.directory;
-  const pluginConfig = loadPluginConfig(projectDir);
-  const slimEntries = extractSlimMcpEntries(projectDir);
-  const pool = new McpConnectionPool(pluginConfig);
-
-  if (Object.keys(slimEntries).length === 0) {
-    return {
-      config: async (cfg: any) => {
-        cfg.skills = cfg.skills || {};
-        cfg.skills.paths = cfg.skills.paths || [];
-        if (!cfg.skills.paths.includes(SKILLS_DIR)) {
-          cfg.skills.paths.push(SKILLS_DIR);
-        }
-      },
-    };
-  }
-
-  // Register all enabled servers in pool
-  for (const [name, config] of Object.entries(slimEntries)) {
-    if (config.enabled !== false) {
-      pool.register(name, config);
-    }
-  }
-
-  // Clean up legacy paths from versions < 0.5.0
-  cleanupLegacyPaths(Object.keys(slimEntries));
-
-  // Wipe generated skills + schemas before regeneration — removes stale artifacts
-  // from servers no longer in config
-  for (const dir of [GENERATED_SKILLS_DIR, join(STATE_DIR, "schemas")]) {
-    if (existsSync(dir)) {
-      try { rmSync(dir, { recursive: true, force: true }); } catch {}
-    }
-  }
-
-  // Connect + introspect + generate skills in one pass.
-  // Servers that fail connect or listTools → marked failed but stay in pool
-  // for mcp-status visibility. Kept in cfg.mcp for native auth flow.
-  const manifest: Manifest = {
-    generatedAt: new Date().toISOString(),
-    servers: {},
-  };
-  const failedServers = new Set<string>();
-  const serverNames = pool.enabledServers();
-
+async function processServers(
+  names: string[],
+  pool: McpConnectionPool,
+  manifest: Manifest,
+  failedServers: Set<string>,
+  pluginConfig: SlimPluginConfig,
+): Promise<void> {
   const results = await Promise.allSettled(
-    serverNames.map(async (name) => {
+    names.map(async (name) => {
       const client = await pool.getClient(name);
       const { tools } = await client.listTools();
       if (tools.length === 0) return;
@@ -835,46 +856,91 @@ const SlimMcpPlugin: Plugin = async (input) => {
       writeSchemas(name, toolInfos);
       manifest.servers[name] = {
         toolCount: toolInfos.length,
-        tools: toolInfos.map((t) => ({ name: t.name, description: firstLine(t.description) })),
+        tools: toolInfos.map((t) => ({
+          name: t.name,
+          description: firstLine(t.description),
+        })),
       };
     })
   );
 
   for (let i = 0; i < results.length; i++) {
     if (results[i].status === "rejected") {
-      const name = serverNames[i];
+      const name = names[i];
       const reason = (results[i] as PromiseRejectedResult).reason;
       const msg = String(reason?.message ?? reason);
       failedServers.add(name);
       await pool.markFailed(name, msg);
       if (pluginConfig.debugging) {
-        console.error(
-          `[slim-mcp] Failed to connect/introspect ${name}:`,
-          reason,
-        );
+        console.error(`[slim-mcp] Failed to connect/introspect ${name}:`, reason);
       }
     }
   }
+}
 
-  saveManifest(manifest);
-  pool.writeStatus();
+// ─── Plugin ──────────────────────────────────────────────────────────────────
+
+const SlimMcpPlugin: Plugin = async (input) => {
+  const projectDir = input.directory;
+  const pluginConfig = loadPluginConfig(projectDir);
+  const rawEntries = extractSlimMcpEntries(projectDir);
+  const pool = new McpConnectionPool(pluginConfig);
+  const allSlimNames = new Set<string>(Object.keys(rawEntries));
+  const manifest: Manifest = { generatedAt: new Date().toISOString(), servers: {} };
+  const failedServers = new Set<string>();
+
+  // Phase 1: register + connect + introspect raw file entries
+  for (const [name, config] of Object.entries(rawEntries)) {
+    if (config.enabled !== false) pool.register(name, config);
+  }
+
+  if (pool.enabledServers().length > 0) {
+    cleanupLegacyPaths(Object.keys(rawEntries));
+    for (const dir of [GENERATED_SKILLS_DIR, join(STATE_DIR, "schemas")]) {
+      if (existsSync(dir)) {
+        try { rmSync(dir, { recursive: true, force: true }); } catch {}
+      }
+    }
+    await processServers(pool.enabledServers(), pool, manifest, failedServers, pluginConfig);
+    saveManifest(manifest);
+    pool.writeStatus();
+  }
 
   return {
     config: async (cfg: any) => {
-      if (cfg.mcp) {
-        const slimNames = Object.keys(slimEntries).filter(
-          (name) => slimEntries[name].enabled !== false
+      // Phase 2: discover slim entries injected into cfg.mcp by prior plugins
+      const cfgEntries = extractCfgMcpEntries(cfg, allSlimNames);
+
+      if (Object.keys(cfgEntries).length > 0) {
+        // Wipe stale artifacts if phase 1 skipped it (no raw entries)
+        if (Object.keys(rawEntries).length === 0) {
+          for (const dir of [GENERATED_SKILLS_DIR, join(STATE_DIR, "schemas")]) {
+            if (existsSync(dir)) {
+              try { rmSync(dir, { recursive: true, force: true }); } catch {}
+            }
+          }
+        }
+
+        for (const [name, config] of Object.entries(cfgEntries)) {
+          allSlimNames.add(name);
+          if (config.enabled !== false) pool.register(name, config);
+        }
+
+        const newNames = Object.keys(cfgEntries).filter(
+          (n) => cfgEntries[n].enabled !== false,
         );
-        for (const name of slimNames) {
-          if (!cfg.mcp[name]) continue;
-          if (failedServers.has(name)) continue; // opencode handles
-          delete cfg.mcp[name]; // plugin handles
+        if (newNames.length > 0) {
+          await processServers(newNames, pool, manifest, failedServers, pluginConfig);
+          saveManifest(manifest);
+          pool.writeStatus();
         }
       }
 
+      // Remove/strip all slim entries from cfg.mcp before opencode validation
+      cleanCfgMcp(cfg, allSlimNames, failedServers);
+
       cfg.skills = cfg.skills || {};
       cfg.skills.paths = cfg.skills.paths || [];
-
       if (!cfg.skills.paths.includes(GENERATED_SKILLS_DIR)) {
         cfg.skills.paths.push(GENERATED_SKILLS_DIR);
       }
@@ -889,13 +955,11 @@ const SlimMcpPlugin: Plugin = async (input) => {
     },
 
     "experimental.chat.system.transform": async (_input, output) => {
-      // Always inject skill-first workflow + tool catalog for MCP servers
       const servers = pool.enabledServers();
       if (servers.length > 0) {
         const manifest = loadManifest();
         const skillList = servers.map((s) => `"mcp-${s}"`).join(", ");
 
-        // Build per-server tool catalog from manifest (names only, keep short)
         let catalog = "";
         if (manifest?.servers) {
           for (const s of servers) {
@@ -915,9 +979,7 @@ const SlimMcpPlugin: Plugin = async (input) => {
           `Step 2: Read the skill output to find tool parameters and the required confirmation token.\n` +
           `Step 3: Call the mcp tool with server, tool, params, and _confirm.\n` +
           `Do NOT guess parameters or confirmation tokens. Always load the skill first.\n` +
-          (catalog
-            ? `\nAvailable tools per server:${catalog}`
-            : "") +
+          (catalog ? `\nAvailable tools per server:${catalog}` : "") +
           `</system-reminder>`
         );
       }
@@ -939,4 +1001,4 @@ const SlimMcpPlugin: Plugin = async (input) => {
   };
 };
 
-export { SlimMcpPlugin };
+export { SlimMcpPlugin, extractCfgMcpEntries, cleanCfgMcp };

@@ -65,15 +65,47 @@ Disabled servers appear as `[disabled]` in `mcp-status` but won't start, generat
 
 ## What Happens on Startup
 
-1. Plugin reads `opencode.json` (project dir + `~/.config/opencode/`)
+1. Plugin reads raw `opencode.json` files (project dir + `~/.config/opencode/`)
 2. Extracts entries with `slim: true` (skips disabled ones)
 3. Introspects each server for available tools
 4. Generates `SKILL.md` files + schema cache per server
-5. Registers a single `mcp` tool that proxies calls to any slim server
-6. Probes remote reachability first; auth failures stay enabled for `opencode mcp auth`
-7. Sets `enabled: false` on remaining slim entries in host config (prevents double-handling)
+5. Registers single `mcp` tool that proxies calls to any slim server
+6. During `config(cfg)`, also discovers live `cfg.mcp` entries injected by earlier plugins
+7. Removes plugin-handled slim entries from final `cfg.mcp` before opencode validation
+8. If slim server fails introspection/auth, entry stays in `cfg.mcp` but `slim` flag gets stripped so opencode can handle fallback/auth flow
 
-Regeneration only triggers when the enabled server list changes.
+## Plugin Ordering
+
+`opencode-slim-mcp` discovers slim MCP servers from two sources:
+
+1. **Raw config files** — `opencode.json` in project dir and `~/.config/opencode/` (read at startup)
+2. **Live `cfg.mcp`** — entries injected by a prior plugin inside its `config(cfg)` hook (read at config time)
+
+If another plugin dynamically injects `cfg.mcp.<name>` entries with `slim: true`, that plugin **must be listed before** `opencode-slim-mcp` in your plugin array. opencode runs plugin `config` hooks in declaration order, so the producer's hook must run first.
+
+```json
+{
+  "plugin": [
+    "my-dynamic-mcp-plugin",
+    "opencode-slim-mcp"
+  ]
+}
+```
+
+The producer plugin injects entries like this in its `config(cfg)` hook:
+
+```typescript
+config: async (cfg) => {
+  cfg.mcp = cfg.mcp ?? {};
+  cfg.mcp["my-server"] = {
+    type: "local",
+    command: ["npx", "-y", "my-mcp-server"],
+    slim: true,
+  };
+}
+```
+
+`opencode-slim-mcp` will register the server, introspect its tools, generate a skill, then **remove the entry from `cfg.mcp`** before opencode's final validation. The `slim` flag never reaches opencode's config validator.
 
 ## Plugin Configuration
 
