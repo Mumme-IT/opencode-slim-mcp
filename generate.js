@@ -11,7 +11,14 @@ import { homedir } from "os";
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG_FILE = "mcp-lazy-proxy.json";
-const DEFAULT_BASE_DIR = join(homedir(), ".config", "opencode");
+
+function getConfigBaseDir(env = process.env, homeDir = homedir()) {
+  if (env.OPENCODE_CONFIG) return dirname(env.OPENCODE_CONFIG);
+  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "opencode");
+  return join(homeDir, ".config", "opencode");
+}
+
+const DEFAULT_BASE_DIR = getConfigBaseDir();
 
 function parseArgs(argv) {
   const args = argv.slice(2);

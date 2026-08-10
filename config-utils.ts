@@ -1,3 +1,6 @@
+import { homedir } from "os";
+import { dirname, join } from "path";
+
 interface SlimMcpConfig {
   type?: "local" | "remote";
   command?: string[];
@@ -7,6 +10,15 @@ interface SlimMcpConfig {
   slim?: boolean;
   enabled?: boolean;
   timeout?: number;
+}
+
+function getConfigBaseDir(
+  env: NodeJS.ProcessEnv = process.env,
+  homeDir: string = homedir(),
+): string {
+  if (env.OPENCODE_CONFIG) return dirname(env.OPENCODE_CONFIG);
+  if (env.XDG_CONFIG_HOME) return join(env.XDG_CONFIG_HOME, "opencode");
+  return join(homeDir, ".config", "opencode");
 }
 
 function normalizeCommand(entry: any): string[] | null {
@@ -93,4 +105,4 @@ function cleanCfgMcp(
   }
 }
 
-export { cleanCfgMcp, extractCfgMcpEntries };
+export { cleanCfgMcp, extractCfgMcpEntries, getConfigBaseDir };

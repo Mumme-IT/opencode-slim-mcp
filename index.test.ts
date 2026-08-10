@@ -1,5 +1,43 @@
 import { describe, it, expect } from "bun:test";
-import { extractCfgMcpEntries, cleanCfgMcp } from "./config-utils.ts";
+import {
+  extractCfgMcpEntries,
+  cleanCfgMcp,
+  getConfigBaseDir,
+} from "./config-utils.ts";
+
+// ─── getConfigBaseDir ─────────────────────────────────────────────────────────
+
+describe("getConfigBaseDir", () => {
+  it("uses directory containing OPENCODE_CONFIG first", () => {
+    expect(
+      getConfigBaseDir(
+        {
+          OPENCODE_CONFIG: "/custom/config/opencode.json",
+          XDG_CONFIG_HOME: "/xdg",
+        },
+        "/home/test",
+      ),
+    ).toBe("/custom/config");
+  });
+
+  it("uses XDG_CONFIG_HOME when OPENCODE_CONFIG is empty", () => {
+    expect(
+      getConfigBaseDir(
+        { OPENCODE_CONFIG: "", XDG_CONFIG_HOME: "/xdg" },
+        "/home/test",
+      ),
+    ).toBe("/xdg/opencode");
+  });
+
+  it("uses home config directory when environment values are empty", () => {
+    expect(
+      getConfigBaseDir(
+        { OPENCODE_CONFIG: "", XDG_CONFIG_HOME: "" },
+        "/home/test",
+      ),
+    ).toBe("/home/test/.config/opencode");
+  });
+});
 
 // ─── extractCfgMcpEntries ────────────────────────────────────────────────────
 

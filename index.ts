@@ -2,7 +2,11 @@ import type { Plugin } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
 import { fileURLToPath } from "url";
 import path from "path";
-import { cleanCfgMcp, extractCfgMcpEntries } from "./config-utils";
+import {
+  cleanCfgMcp,
+  extractCfgMcpEntries,
+  getConfigBaseDir,
+} from "./config-utils";
 import {
   existsSync,
   readFileSync,
@@ -22,7 +26,8 @@ import type { OAuthTokens, OAuthClientInformationMixed, OAuthClientMetadata } fr
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILLS_DIR = path.resolve(__dirname, "..", "..", "skills");
 
-const DEFAULT_BASE_DIR = join(homedir(), ".config", "opencode");
+const DEFAULT_BASE_DIR = getConfigBaseDir();
+const LEGACY_BASE_DIR = join(homedir(), ".config", "opencode");
 const STATE_DIR = join(homedir(), ".local", "state", "opencode", "slim-mcp");
 const GENERATED_SKILLS_DIR = join(STATE_DIR, "skills");
 const MCP_STATUS_FILE = join(STATE_DIR, "status.json");
@@ -705,10 +710,10 @@ function ensureDir(dir: string): void {
   mkdirSync(dir, { recursive: true });
 }
 
-/** Remove legacy artifacts from ~/.config/opencode/ left by versions < 0.5.0. */
+/** Remove artifacts from fixed paths used by versions < 0.5.0. */
 function cleanupLegacyPaths(serverNames: string[]): void {
-  const legacyAiSkillsDir = join(DEFAULT_BASE_DIR, ".ai-skills", "slim-mcp");
-  const legacySkillsDir = join(DEFAULT_BASE_DIR, "skills");
+  const legacyAiSkillsDir = join(LEGACY_BASE_DIR, ".ai-skills", "slim-mcp");
+  const legacySkillsDir = join(LEGACY_BASE_DIR, "skills");
 
   // Remove old .ai-skills/slim-mcp/ directory (status.json, schemas, manifest)
   if (existsSync(legacyAiSkillsDir)) {
@@ -717,7 +722,7 @@ function cleanupLegacyPaths(serverNames: string[]): void {
     } catch {}
   }
 
-  // Remove old generated skills: ~/.config/opencode/skills/mcp-<server>/
+  // Remove old generated skills from historical skills directory
   for (const name of serverNames) {
     const legacySkillDir = join(legacySkillsDir, `mcp-${name}`);
     if (existsSync(legacySkillDir)) {

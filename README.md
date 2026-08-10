@@ -63,9 +63,15 @@ Set `"enabled": false` to disable a server without removing it from config:
 
 Disabled servers appear as `[disabled]` in `mcp-status` but won't start, generate skills, or accept tool calls.
 
+Global config base resolves in this order:
+
+1. Directory containing non-empty `OPENCODE_CONFIG`
+2. `<XDG_CONFIG_HOME>/opencode` when `XDG_CONFIG_HOME` is non-empty
+3. `~/.config/opencode`
+
 ## What Happens on Startup
 
-1. Plugin reads raw `opencode.json` files (project dir + `~/.config/opencode/`)
+1. Plugin reads raw `opencode.json` files (project dir + resolved global config base)
 2. Extracts entries with `slim: true` (skips disabled ones)
 3. Introspects each server for available tools
 4. Generates `SKILL.md` files + schema cache per server
@@ -78,7 +84,7 @@ Disabled servers appear as `[disabled]` in `mcp-status` but won't start, generat
 
 `opencode-slim-mcp` discovers slim MCP servers from two sources:
 
-1. **Raw config files** — `opencode.json` in project dir and `~/.config/opencode/` (read at startup)
+1. **Raw config files** — `opencode.json` in project dir and resolved global config base (read at startup)
 2. **Live `cfg.mcp`** — entries injected by a prior plugin inside its `config(cfg)` hook (read at config time)
 
 If another plugin dynamically injects `cfg.mcp.<name>` entries with `slim: true`, that plugin **must be listed before** `opencode-slim-mcp` in your plugin array. opencode runs plugin `config` hooks in declaration order, so the producer's hook must run first.
@@ -109,7 +115,7 @@ config: async (cfg) => {
 
 ## Plugin Configuration
 
-Create `slim-mcp-config.json` in your project root or `~/.config/opencode/`:
+Create `slim-mcp-config.json` in your project root or resolved global config base:
 
 ```json
 {

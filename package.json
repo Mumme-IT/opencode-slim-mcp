@@ -1,6 +1,6 @@
 {
   "name": "opencode-slim-mcp",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "OpenCode plugin — convert MCP servers with slim:true into skills + native proxy tools with connection pooling",
   "repository": {
     "type": "git",
