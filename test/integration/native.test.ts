@@ -15,8 +15,11 @@ test('the installed native server binds CLI calls to real shell context and pres
   mkdirSync(project)
   mkdirSync(home)
   // Exercise the published files and bin, not an accidental workspace-only entrypoint.
-  const pack = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', root], { encoding: 'utf8' })) as Array<{ filename: string }>
-  execFileSync('npm', ['install', '--prefix', `${root}/installed`, `${root}/${pack[0]!.filename}`, '--ignore-scripts', '--no-audit', '--no-fund'], { stdio: 'pipe' })
+  // npm 11 returns an array; npm 12 keys the same report by package name.
+  const report = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', root], { encoding: 'utf8' })) as Array<{ filename: string }> | Record<string, { filename: string }>
+  const packed = Array.isArray(report) ? report : Object.values(report)
+  if (packed.length !== 1 || !packed[0]?.filename) throw new Error('npm pack must report exactly one package tarball')
+  execFileSync('npm', ['install', '--prefix', `${root}/installed`, `${root}/${packed[0].filename}`, '--ignore-scripts', '--no-audit', '--no-fund'], { stdio: 'pipe' })
   const installed = `${root}/installed/node_modules/opencode-slim-mcp`
   const requests: unknown[] = []
   const model = Bun.serve({
