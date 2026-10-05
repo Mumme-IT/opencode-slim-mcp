@@ -2,9 +2,9 @@
 
 Expose selected native OpenCode MCP tools through a CLI and on-demand skills instead of advertising their tool descriptions.
 
-**This is a breaking, V2-only implementation. It requires OpenCode 2.0.23 and Node.js 24 or newer.** Other OpenCode releases are rejected until their tool, shell, and permission contracts are validated. This repository builds version `1.0.0`; it does not publish that version automatically.
+**Version 1.0.0 is a breaking, V2-only implementation. It requires OpenCode 2.0.23 and Node.js 24 or newer.** Other OpenCode releases are rejected until their tool, shell, and permission contracts are validated.
 
-**This is a validation candidate, not a release-ready package.** Live catalog changes during pending approval require an upstream atomic execution interface. Remote OAuth and token-cost acceptance also remain unverified. See [implementation evidence and release blockers](docs/implementation.md) before deployment.
+**This release has explicitly accepted limitations.** A live catalog change during pending approval can precede revocation and affect the operation being approved. Atomic catalog identity requires an upstream execution interface. Remote OAuth and net token savings remain unverified. See [implementation evidence and release limitations](docs/implementation.md) before deployment.
 
 ## Architecture
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-The repository now builds a V2-only `1.0.0` package for **OpenCode 2.0.23**. The implementation uses public `@opencode/plugin` and `@opencode/client` interfaces. It does not contain a V1 runtime, an independent MCP connection pool, a credential-file reader, or a generic model-visible proxy tool. No package has been published.
+The repository builds a V2-only `1.0.0` package for **OpenCode 2.0.23**. The implementation uses public `@opencode/plugin` and `@opencode/client` interfaces. It does not contain a V1 runtime, an independent MCP connection pool, a credential-file reader, or a generic model-visible proxy tool. Explicit approval for the constrained stable release is recorded below.
 
 The optional sidebar is omitted from this release. Its old V1 implementation and export are removed rather than retained as compatibility code.
 
@@ -72,13 +72,13 @@ No hard standards violations remain. Review fixes preserve unrelated XML instruc
 
 ### Spec
 
-The review identifies four remaining partial requirements: atomic execution across live catalog changes, distinct native error categories, deployment/cancellation validation, and measured token savings. Small native file/media results now use private artifact references instead of inline binary data. Configuration-replacement cancellation and scoped instruction filtering have regression tests. The remaining requirements block release acceptance.
+The review identifies four remaining partial requirements: atomic execution across live catalog changes, distinct native error categories, deployment/cancellation validation, and measured token savings. Small native file/media results now use private artifact references instead of inline binary data. Configuration-replacement cancellation and scoped instruction filtering have regression tests. These requirements remain incomplete; the user accepts the constrained stable release below rather than treating them as validated.
 
 Summary: one low-priority Standards heuristic and four Spec gaps remain. The worst Standards issue is duplication; the worst Spec issue is atomic live-catalog execution safety.
 
 ## Remaining release validation
 
-The local installed-runtime proof does not establish every deployment's behavior. Before publishing or deploying broadly, complete these checks:
+The local installed-runtime proof does not establish every deployment's behavior. The accepted stable release does not waive the need to complete these checks before claiming those behaviors:
 
 - Compare complete representative tasks with native V2 Code Mode using the intended model and its tokenizer. Include skill loading, discovery, commands, results, and cache effects. No net token-cost reduction is claimed from catalog removal alone.
 - Exercise remote HTTP MCP servers, OAuth expiry and account changes, and remote/standalone endpoint authentication in the intended deployment.
@@ -92,10 +92,16 @@ The 2.0.23 native MCP executor also converts several internal failures, includin
 
 Catalog and configuration invalidation abort calls that are waiting for approval or executing. Public MCP status and credential/integration events also conservatively invalidate the admitted catalog. A failed event watcher permanently revokes invocation authority. These cancellations cannot undo external side effects that already occurred.
 
-The pinned public plugin event stream does not include `mcp.tools.changed`, although the internal schema defines that event. Catalog capture detects changes after native reconciliation. A live catalog change can therefore precede revocation while a call waits for approval. Atomic catalog identity checks at the native execution point require an upstream interface; the local configuration-replacement test does not prove this stronger property. This is a remaining release blocker, not a supported unsafe fallback.
+The pinned public plugin event stream does not include `mcp.tools.changed`, although the internal schema defines that event. Catalog capture detects changes after native reconciliation. A live catalog change can therefore precede revocation while a call waits for approval. Atomic catalog identity checks at the native execution point require an upstream interface; the local configuration-replacement test does not prove this stronger property. The user explicitly accepts this limitation for version 1.0.0. No additional transport or permission-bypassing fallback is introduced.
+
+## Stable release approval
+
+On 2026-10-05, the user requests a release and confirmed publication. The release question discloses the known catalog-change race during approval and the unverified remote OAuth and token-saving behavior. The user chooses **Stable 1.0.0**, explicitly accepting the disclosed limitations and publication under `latest` rather than a prerelease.
+
+This approval authorizes publication of version 1.0.0 only. It does not establish atomic live-catalog safety, distinct native error categories, remote deployment validation, or net token savings. The warnings remain in the published README and implementation notes.
 
 ## Release and cleanup
 
-GitHub is the single npm publication authority. Both GitHub and the Gitea mirror validate the package; the mirror does not publish. Publication also requires the production environment variable `SLIM_MCP_RELEASE_VALIDATED=true`; leave it unset until the documented acceptance blockers are resolved. Build steps do not copy plugins into a user's configuration.
+GitHub is the single npm publication authority. Both GitHub and the Gitea mirror validate the package; the mirror does not publish. Publication requires the production environment variable `SLIM_MCP_RELEASE_ACCEPTED_VERSION` to equal the package version. This records explicit release approval, not technical validation, and does not approve a later version automatically. Build steps do not copy plugins into a user's configuration.
 
 Keep historical 0.x releases separate. Remove obsolete generated artifacts only after verifying ownership and obtaining approval. Never remove native credentials or recursively wipe shared skill/state directories. The runtime does not perform legacy cleanup automatically.

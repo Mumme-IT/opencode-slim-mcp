@@ -44,11 +44,14 @@ jobs:
       - name: Validate native V2 package
         run: npm run check
 
-      - name: Require completed release acceptance
-        if: vars.SLIM_MCP_RELEASE_VALIDATED != 'true'
+      - name: Require explicit approval for this release
+        env:
+          RELEASE_ACCEPTED_VERSION: ${{ vars.SLIM_MCP_RELEASE_ACCEPTED_VERSION }}
         run: |
-          echo "Release acceptance is incomplete. Resolve docs/implementation.md blockers before enabling SLIM_MCP_RELEASE_VALIDATED."
-          exit 1
+          if [ "${RELEASE_ACCEPTED_VERSION}" != "$(node -p 'require("./package.json").version')" ]; then
+            echo "This version requires explicit release approval. See docs/implementation.md."
+            exit 1
+          fi
 
       - name: Publish to npm
         run: npm publish --provenance --access public
