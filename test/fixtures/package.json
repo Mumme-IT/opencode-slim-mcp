@@ -1,0 +1,5 @@
+{
+  "name": "slim-mcp-fixture",
+  "type": "module",
+  "exports": { ".": "./provider.ts" }
+}

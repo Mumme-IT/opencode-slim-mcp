@@ -32,16 +32,23 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: "1.4.2"
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: npm ci
 
-      - name: Set version from tag
+      - name: Validate release version
         run: |
-          TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          bun x json -I -f package.json -e "this.version='${VERSION}'"
+          test "${GITHUB_REF_NAME}" = "v$(node -p 'require("./package.json").version')"
+
+      - name: Validate native V2 package
+        run: npm run check
+
+      - name: Require completed release acceptance
+        if: vars.SLIM_MCP_RELEASE_VALIDATED != 'true'
+        run: |
+          echo "Release acceptance is incomplete. Resolve docs/implementation.md blockers before enabling SLIM_MCP_RELEASE_VALIDATED."
+          exit 1
 
       - name: Publish to npm
         run: npm publish --provenance --access public

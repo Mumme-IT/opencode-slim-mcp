@@ -1,7 +1,7 @@
 {
   "name": "opencode-slim-mcp",
-  "version": "0.6.4",
-  "description": "OpenCode plugin — convert MCP servers with slim:true into skills + native proxy tools with connection pooling",
+  "version": "1.0.0",
+  "description": "OpenCode V2 plugin — expose native MCP tools through a CLI and on-demand skills",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Mumme-IT/opencode-slim-mcp.git"
@@ -22,59 +22,54 @@
   "main": "./dist/server.js",
   "exports": {
     ".": {
+      "types": "./dist/types/server/index.d.ts",
       "import": "./dist/server.js"
     },
     "./server": {
+      "types": "./dist/types/server/index.d.ts",
       "import": "./dist/server.js"
     },
-    "./tui": {
-      "import": "./dist/tui.js"
+    "./rpc": {
+      "types": "./dist/types/rpc.d.ts",
+      "import": "./dist/rpc.js"
     }
   },
   "bin": {
-    "slim-mcp-generate": "./generate.js"
+    "slim-mcp": "./dist/cli.js"
   },
   "files": [
     "dist",
-    "generate.js",
+    "index.ts",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "bun run build:server && bun run build:tui",
-    "build:server": "bun build index.ts --outdir dist --target node --entry-naming \"server.[ext]\" --external @opencode-ai/plugin --external @opencode-ai/sdk --external @modelcontextprotocol/sdk",
-    "build:tui": "bun run build-tui.ts",
-    "postbuild": "mkdir -p .opencode/plugins && cp dist/server.js .opencode/plugins/slim-mcp.js",
-    "prepublishOnly": "bun run build",
-    "test": "bun test",
-    "generate": "node generate.js",
-    "refresh": "node generate.js"
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run check",
+    "check": "npm run typecheck && npm test && npm run build && npm run smoke && npm run test:integration",
+    "test": "node --import tsx --test test/unit/*.test.ts",
+    "test:integration": "bun test test/integration --timeout 120000",
+    "smoke": "node scripts/smoke.mjs"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0",
-    "@opentui/core": ">=0.2.6",
-    "@opentui/solid": ">=0.2.6",
-    "solid-js": "*"
-  },
-  "peerDependenciesMeta": {
-    "@opentui/core": {
-      "optional": true
-    },
-    "@opentui/solid": {
-      "optional": true
-    },
-    "solid-js": {
-      "optional": true
-    }
+    "@opencode/plugin": "2.0.23"
   },
   "devDependencies": {
-    "@opencode-ai/plugin": "^1.4.6",
-    "@opentui/solid": ">=0.2.6",
-    "@types/bun": "^1.2.0",
-    "solid-js": "^1.9.0",
-    "typescript": "^5.8.0"
+    "@opencode/cli": "2.0.23",
+    "@opencode/plugin": "2.0.23",
+    "@types/bun": "1.4.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "tsx": "^4.20.0",
+    "typescript": "5.8.3"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0"
+    "@opencode/client": "2.0.23",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }
